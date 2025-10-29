@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <link rel='manifest' href='manifest.json'>
+  <meta name='theme-color' content='#22324D'>
+  <title>HostelSync PWA Demo</title>
+  <script src='https://cdn.tailwindcss.com'></script>
+  <script crossorigin src='https://unpkg.com/react@18/umd/react.development.js'></script>
+  <script crossorigin src='https://unpkg.com/react-dom@18/umd/react-dom.development.js'></script>
+  <script crossorigin src='https://unpkg.com/@babel/standalone/babel.min.js'></script>
+</head>
+<body class='bg-gray-50'>
+  <div id='root'></div>
+  <script type='text/babel' data-presets='typescript,react'>
+
+/**
+ * HostelSync – Progressive Web App (PWA) mock (Laundry-first, Student POV)
+ * ------------------------------------------------------------------------
+ * New in this version
+ * - **Home/Landing page**: friendly entry with module cards (Laundry, Rooms, My Washes, Alerts)
+ * - Split modules: Laundry grid renders only on Laundry tab; Rooms is teased, others separated
+ * - Machine cards simplified: **no duplicate icons**, **no duplicate labels**; cleaner status
+ * - LVH floors capped at **4**; friendly microcopy & polish
+ * - Account menu shows **Student (Google)** or **Admin** login (admin view still scaffolded only)
+ * - "My Washes" screen (active timers + history; collect action)
+ */
+
+// --- Design tokens (softer feel)
+const COLORS = {
+  navy: "#22324D", // softer navy
+  info: "#62B6F9",
+  success: "#39C27A",
+  warn: "#F4AE4C",
+  danger: "#E46A6A",
+  text: "#0F172A",
+  sub: "#64748B",
+  bg: "#F8FAFC",
+  surface: "#FFFFFF",
+};
+
+// --- Helpers
+const sleep = (ms:number) => new Promise(res => setTimeout(res, ms));
+const nowTime = () => new Date().toLocaleTimeString();
+
+// --- Fake auth (Google + Admin mock)
+interface User { name: string; email: string; role: "student" | "admin" }
+
+function useAuthMock(){
+  const [user, setUser] = useState<User | null>(null);
+  const signInWithGoogle = async () => {
+    await sleep(300);
+    setUser({ name: "Ranabir Basu", email: "ranabir@iimcal.ac.in", role: "student" });
+  };
+  const signInAsAdmin = async () => {
+    await sleep(200);
+    setUser({ name: "Admin", email: "admin@iimcal.ac.in", role: "admin" });
+  };
+  const signOut = async () => setUser(null);
+  return { user, signInWithGoogle, signInAsAdmin, signOut };
+}
+
+// --- Domain
+type MachineStatus = "FREE" | "RUNNING" | "AWAITING" | "MAINT";
+
+interface Machine {
+  id: string;
+  label: string;
+  hostel: HostelCode; // LVH/OH/WH/NH
+  floor: number;
+  status: MachineStatus;
+  eta?: number; // minutes remaining
+  manual?: boolean; // when IoT is down
+  lastCompletedAt?: number; // epoch ms
+}
+
+interface Wash {
+  id: string;
+  machineId: string;
+  machineLabel: string;
+  hostel: HostelCode;
+  floor: number;
+  startAt: number;
+  endAt?: number;
+  status: "RUNNING" | "AWAITING" | "COLLECTED";
+}
+
+const HOSTELS = ["LVH", "OH", "WH", "NH"] as const;
+
+type HostelCode = typeof HOSTELS[number];
+
+function makeMachines(): Machine[] {
+  const out: Machine[] = [];
+  const hostel:HostelCode = "LVH";
+  for (let floor = 1; floor <= 4; floor++) { // LVH has 4 floors
+    for (let i = 1; i <= 5; i++) {
+      const id = `${hostel}-${floor}-${i}`;
+      const running = Math.random() < 0.45;
+      const awaiting = !running && Math.random() < 0.25;
+      out.push({
+        id,
+        label: `M-${floor}${String.fromCharCode(64 + i)}`,
+        hostel,
+        floor,
+        status: running ? "RUNNING" : (awaiting ? "AWAITING" : "FREE"),
+        eta: running ? Math.floor(8 + Math.random() * 28) : undefined,
+        lastCompletedAt: awaiting ? Date.now() - Math.floor(Math.random() * 1000 * 60 * 30) : undefined,
+      });
+    }
+  }
+  return out;
+}
+
+// --- Notifications (in-app + Web Notifications when permitted)
+interface Notice { id: string; title: string; time: string; kind?: "info"|"success"|"warning"|"report" }
+
+function useNotifier(){
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const push = (n: Omit<Notice, "id" | "time"> & { time?: string }) => {
+    const notice: Notice = { id: `n-${Date.now()}`, time: n.time ?? nowTime(), ...n };
+    setNotices(ns => [notice, ...ns].slice(0, 50));
+
+    // Try Web Notification API
+    if ("Notification" in window) {
+      if (Notification.permission === "granted") {
+        new Notification(n.title);
+      } else if (Notification.permission !== "denied") {
+        Notification.requestPermission();
+      }
+    }
+  };
+  const clear = () => setNotices([]);
+  return { notices, push, clear };
+}
+
+// --- App
+export default function App() {
+  const { user, signInWithGoogle, signInAsAdmin, signOut } = useAuthMock();
+  const [hostel, setHostel] = useState<HostelCode>("LVH");
+  const [floor, setFloor] = useState<number>(3);
+  const [machines, setMachines] = useState<Machine[]>(() => makeMachines());
+  const [filter, setFilter] = useState<MachineStatus | "ALL">("ALL");
+  const [activeMachine, setActiveMachine] = useState<Machine | null>(null);
+  const [tab, setTab] = useState<"home" | "laundry" | "washes" | "rooms" | "notifs" | "profile">("home");
+  const [notifsOpen, setNotifsOpen] = useState(false);
+  const { notices, push: pushNotice } = useNotifier();
+  const [reports, setReports] = useState<any[]>([]);
+  const [watchFree, setWatchFree] = useState(false);
+  const [myWashes, setMyWashes] = useState<Wash[]>([]);
+  const prevFree = useRef(0);
+
+  // PWA install prompt
+  const deferredPrompt = useRef<any>(null);
+  const [canInstall, setCanInstall] = useState(false);
+  useEffect(() => {
+    const handler = (e: any) => {
+      e.preventDefault();
+      deferredPrompt.current = e;
+      setCanInstall(true);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+  const onInstall = async () => {
+    const dp = deferredPrompt.current;
+    if (!dp) return;
+    dp.prompt();
+    const { outcome } = await dp.userChoice;
+    if (outcome === "accepted") setCanInstall(false);
+  };
+
+  // Derived
+  const subset = useMemo(() => machines.filter(m => m.hostel === hostel && m.floor === floor), [machines, hostel, floor]);
+  const visible = useMemo(() => subset.filter(m => (filter === "ALL" || m.status === filter)), [subset, filter]);
+  const counts = useMemo(() => ({
+    free: subset.filter(m => m.status === "FREE").length,
+    run: subset.filter(m => m.status === "RUNNING").length,
+    await: subset.filter(m => m.status === "AWAITING").length,
+    maint: subset.filter(m => m.status === "MAINT").length,
+  }), [subset]);
+
+  // Watch for free machine (when user opted-in and there were none)
+  useEffect(() => {
+    const currentFree = counts.free;
+    if (watchFree && prevFree.current === 0 && currentFree > 0) {
+      pushNotice({ title: `A machine is now free on Floor ${floor}.`, kind: "success" });
+      setWatchFree(false);
+    }
+    prevFree.current = currentFree;
+  }, [counts.free, watchFree, floor]);
+
+  // Simulate minute ticks for RUNNING ETAs + reminders
+  useEffect(() => {
+    const t = setInterval(() => {
+      setMachines(prev => prev.map(m => {
+        if (m.status === "RUNNING" && (m.eta ?? 0) > 0) {
+          const eta = (m.eta ?? 0) - 1;
+          if (eta === 3) {
+            pushNotice({ title: `${m.label} finishing in ~3 minutes.` , kind: "info"});
+          }
+          if (eta <= 0) {
+            pushNotice({ title: `${m.label} finished. Please collect clothes.` , kind: "success"});
+            // Update MyWashes from RUNNING -> AWAITING
+            setMyWashes(ws => {
+              const idx = ws.findIndex(w => w.machineId === m.id && w.status === "RUNNING");
+              if (idx >= 0) {
+                const copy = [...ws];
+                copy[idx] = { ...copy[idx], status: "AWAITING", endAt: Date.now() };
+                return copy;
+              }
+              return ws;
+            });
+            return { ...m, status: "AWAITING", eta: undefined, lastCompletedAt: Date.now() };
+          }
+          return { ...m, eta };
+        }
+        return m;
+      }));
+    }, 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Handlers
+  const startWash = (m: Machine, minutes = 35) => {
+    if (!user) { pushNotice({ title: "Please sign in to start a wash", kind: "warning"}); return; }
+    setMachines(prev => prev.map(x => x.id === m.id ? { ...x, status: "RUNNING", eta: minutes, manual: x.manual || false } : x));
+    setActiveMachine({ ...m, status: "RUNNING", eta: minutes });
+    setMyWashes(ws => [{ id: `w-${Date.now()}`, machineId: m.id, machineLabel: m.label, hostel: m.hostel, floor: m.floor, startAt: Date.now(), status: "RUNNING" }, ...ws]);
+    pushNotice({ title: `Started wash on ${m.label}.`, kind: "info"});
+  };
+
+  const markCollected = (m: Machine) => {
+    setMachines(prev => prev.map(x => x.id === m.id ? { ...x, status: "FREE", eta: undefined } : x));
+    setMyWashes(ws => {
+      const idx = ws.findIndex(w => w.machineId === m.id && w.status === "AWAITING");
+      if (idx >= 0) {
+        const copy = [...ws];
+        copy[idx] = { ...copy[idx], status: "COLLECTED", endAt: Date.now() };
+        return copy;
+      }
+      return ws;
+    });
+    pushNotice({ title: `Thank you! ${m.label} is free now.`, kind: "success"});
+  };
+
+  const nudgeCurrentUser = (m: Machine) => {
+    pushNotice({ title: `A gentle nudge was sent for ${m.label}.`, kind: "info"});
+  };
+
+  const submitReport = (r: any, affectStatus: boolean) => {
+    setReports(prev => [r, ...prev]);
+    pushNotice({ title: `Report submitted for ${r.machineId}.`, kind: "report"});
+    if (affectStatus) {
+      setMachines(prev => prev.map(x => x.id === r.machineId ? { ...x, status: "MAINT", eta: undefined } : x));
+    }
+  };
+
+  // UI
+  return (
+    <div className="min-h-screen w-full bg-[\#F8FAFC] text-[\#0F172A] flex justify-center">
+      <div className="w-full max-w-[420px] min-h-screen flex flex-col">
+        {/* AppBar */}
+        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-slate-200">
+          <div className="px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-2xl bg-[\#22324D] flex items-center justify-center text-white font-bold">HS</div>
+              <div>
+                <div className="text-xs text-slate-500">HostelSync</div>
+                <div className="font-semibold">{tab === 'home' ? 'Welcome' : tabLabel(tab)}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {canInstall && (
+                <button onClick={onInstall} className="px-3 py-1.5 rounded-lg bg-[\#22324D] text-white text-sm">Install</button>
+              )}
+              <button onClick={() => setNotifsOpen(v => !v)} className="relative px-3 py-1.5 rounded-lg border border-slate-200 text-sm">Notifications
+                {notices.length > 0 && <span className="ml-2 inline-flex items-center justify-center bg-[\#62B6F9] text-white text-xs rounded-full w-5 h-5">{notices.length}</span>}
+              </button>
+              <AccountMenu user={user} onSignIn={signInWithGoogle} onAdmin={signInAsAdmin} onSignOut={signOut} onOpenWashes={() => setTab("washes")} />
+            </div>
+          </div>
+
+          {/* Context toolbar shows only for module pages */}
+          {tab === 'laundry' && (
+            <div className="px-4 pb-3 flex items-center gap-2">
+              <select value={hostel} onChange={e => setHostel(e.target.value as HostelCode)} className="px-3 py-2 rounded-lg bg-white border border-slate-200">
+                {HOSTELS.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+              <select value={floor} onChange={e => setFloor(parseInt(e.target.value))} className="px-3 py-2 rounded-lg bg-white border border-slate-200">
+                {Array.from({ length: 4 }).map((_,i) => <option key={i+1} value={i+1}>{`Floor ${i+1}`}</option>)}
+              </select>
+              <div className="ml-auto hidden sm:flex items-center gap-2 text-sm">
+                <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-600 text-xs">Student view</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* HOME / LANDING */}
+        {tab === 'home' && (
+          <div className="px-4 py-6 pb-28">
+            <div className="rounded-2xl bg-white border border-slate-200 p-4">
+              <div className="flex items-center gap-3">
+                <IconWave className="w-8 h-8"/>
+                <div>
+                  <div className="text-lg font-semibold">What do you need today?</div>
+                  <div className="text-slate-600 text-sm">Pick a module to get started.</div>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-4">
+              <ModuleCard title="Laundry" subtitle="Find & start a wash" icon={<IconWasher className="w-8 h-8"/>} onClick={()=>setTab('laundry')} />
+              <ModuleCard title="Rooms" subtitle="LAN / TV / Common" icon={<IconRooms className="w-8 h-8"/>} onClick={()=>setTab('rooms')} />
+              <ModuleCard title="My washes" subtitle="Active & history" icon={<IconSpin className="w-7 h-7"/>} onClick={()=>setTab('washes')} />
+              <ModuleCard title="Alerts" subtitle="Notifications" icon={<IconBell className="w-7 h-7"/>} onClick={()=>setTab('notifs')} />
+            </div>
+          </div>
+        )}
+
+        {/* LAUNDRY */}
+        {tab === 'laundry' && (
+          <>
+            {/* Summary cards */}
+            <div className="px-4 pt-4 grid grid-cols-4 gap-3">
+              <StatCard title="Free" value={counts.free} color={COLORS.success} icon={<IconCheck />} />
+              <StatCard title="Running" value={counts.run} color={COLORS.info} icon={<IconSpin />} />
+              <StatCard title="Awaiting" value={counts.await} color={COLORS.warn} icon={<IconBell />} />
+              <StatCard title="Maint" value={counts.maint} color={COLORS.danger} icon={<IconWrench />} />
+            </div>
+
+            {/* All busy banner */}
+            {counts.free === 0 && (
+              <div className="mx-4 mt-3 p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+                <div className="text-sm text-slate-600 flex items-center gap-2"><IconBell className="w-4 h-4"/> All machines are busy right now.</div>
+                {!watchFree ? (
+                  <button onClick={()=>setWatchFree(true)} className="px-3 py-1.5 rounded-lg bg-[#22324D] text-white text-sm">Notify when free</button>
+                ) : (
+                  <span className="text-sm text-slate-500">We’ll notify you 🔔</span>
+                )}
+              </div>
+            )}
+
+            {/* Filters */}
+            <div className="px-4 py-3 flex gap-2 overflow-x-auto scrollbar-none">
+              {(["ALL","FREE","RUNNING","AWAITING","MAINT"] as const).map(k => (
+                <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded-full border text-sm ${filter===k?"bg-[#22324D] text-white border-transparent":"bg-white border-slate-200"}`}>{k}</button>
+              ))}
+            </div>
+
+            {/* Laundry grid */}
+            <div className="px-4 pb-28 grid grid-cols-2 gap-3">
+              {visible.map(m => (
+                <MachineCard key={m.id} m={m} onOpen={() => setActiveMachine(m)} />
+              ))}
+              {visible.length === 0 && (
+                <div className="col-span-2 text-center p-8 text-slate-500">No machines match this filter.</div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* MY WASHES */}
+        {tab === "washes" && (
+          <MyWashes
+            washes={myWashes}
+            machines={machines}
+            onOpenMachine={(id) => {
+              const m = machines.find(x => x.id === id);
+              if (m) { setTab('laundry'); setActiveMachine(m); }
+            }}
+            onCollect={(id) => {
+              const m = machines.find(x => x.id === id);
+              if (m) markCollected(m);
+            }}
+          />
+        )}
+
+        {/* NOTIFS (shortcut) */}
+        {tab === 'notifs' && (
+          <div className="px-4 py-6 pb-28">
+            <div className="text-lg font-semibold mb-2">Alerts</div>
+            <div className="text-slate-600 mb-4">Recent notifications appear here.</div>
+            <div className="space-y-3">
+              {notices.length === 0 && (
+                <div className="text-slate-500">No notifications yet.</div>
+              )}
+              {notices.map(n => (
+                <div key={n.id} className="border border-slate-200 rounded-xl p-3 bg-slate-50">
+                  <div className="font-medium">{n.title}</div>
+                  <div className="text-xs text-slate-500 mt-1">{n.time}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ROOMS teaser */}
+        {tab === "rooms" && (
+          <div className="px-4 py-12 text-center">
+            <h2 className="text-xl font-semibold mb-2">Rooms module coming next month</h2>
+            <p className="text-slate-600">Book LAN, TV, Common & Sports rooms with approvals.</p>
+            <div className="mt-6 inline-flex gap-2">
+              <Badge color={COLORS.info}>Calendar</Badge>
+              <Badge color={COLORS.success}>Live status</Badge>
+              <Badge color={COLORS.warn}>Approvals</Badge>
+            </div>
+          </div>
+        )}
+
+        {/* Bottom nav */}
+        <BottomNav tab={tab} setTab={setTab} />
+
+        {/* Drawers / Modals */}
+        {activeMachine && (
+          <MachineSheet
+            m={activeMachine}
+            close={() => setActiveMachine(null)}
+            startWash={startWash}
+            markCollected={markCollected}
+            nudge={nudgeCurrentUser}
+            onReport={(entry, affect)=>submitReport(entry, affect)}
+            isStudent={true}
+          />
+        )}
+
+        {notifsOpen && (
+          <NotifDrawer notices={notices} close={() => setNotifsOpen(false)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function tabLabel(t:string){
+  switch(t){
+    case 'home': return 'Welcome';
+    case 'laundry': return 'Laundry';
+    case 'washes': return 'My washes';
+    case 'rooms': return 'Rooms';
+    case 'notifs': return 'Alerts';
+    case 'profile': return 'Profile';
+    default: return 'Welcome';
+  }
+}
+
+// --- Atoms
+function ModuleCard({ title, subtitle, icon, onClick }:{ title:string; subtitle:string; icon:any; onClick:()=>void }){
+  return (
+    <button onClick={onClick} className="rounded-2xl bg-white border border-slate-200 p-4 text-left hover:shadow-md transition flex items-center gap-3">
+      <div className="shrink-0">{icon}</div>
+      <div>
+        <div className="font-semibold">{title}</div>
+        <div className="text-sm text-slate-600">{subtitle}</div>
+      </div>
+    </button>
+  );
+}
+
+function StatCard({ title, value, color, icon}:{title:string; value:number|string; color:string; icon?:any}){
+  return (
+    <div className="rounded-2xl bg-white border border-slate-200 p-3">
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-slate-500 text-xs">{title}</div>
+        {icon}
+      </div>
+      <div className="flex items-end justify-between">
+        <div className="text-2xl font-semibold">{value}</div>
+        <div className="w-2 h-2 rounded-full" style={{background: color}} />
+      </div>
+    </div>
+  );
+}
+
+function MachineCard({ m, onOpen }:{ m:Machine; onOpen:()=>void }){
+  const chip = useMemo(() => {
+    switch (m.status){
+      case "FREE": return { label: "Free", color: COLORS.success, icon: <IconCheck/> };
+      case "RUNNING": return { label: m.eta?`Running · ${m.eta}m`:"Running", color: COLORS.info, icon: <IconSpin/> };
+      case "AWAITING": return { label: "Awaiting pickup", color: COLORS.warn, icon: <IconBell/> };
+      case "MAINT": return { label: "Maintenance", color: COLORS.danger, icon: <IconWrench/> };
+    }
+  }, [m.status, m.eta]);
+  return (
+    <button onClick={onOpen} className="rounded-3xl bg-white border border-slate-200 p-4 text-left hover:shadow-md transition">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-lg font-semibold">{m.label}</div>
+        <span className="px-2.5 py-1 text-xs rounded-full flex items-center gap-1" style={{background: `${chip.color}20`, color: chip.color}}>
+          {chip.icon}<span>{chip.label}</span>
+        </span>
+      </div>
+      <div className="flex items-center gap-3">
+        <IconWasher className="w-10 h-10"/>
+        <div className="text-sm text-slate-600">Floor {m.floor} · {m.hostel}</div>
+      </div>
+    </button>
+  );
+}
+
+function BottomNav({ tab, setTab }:{ tab: string; setTab: (t:any)=>void }){
+  const items = [
+    { key: "home", label: "Home" },
+    { key: "laundry", label: "Laundry" },
+    { key: "washes", label: "My washes" },
+    { key: "notifs", label: "Alerts" },
+    { key: "profile", label: "Profile" },
+  ];
+  return (
+    <div className="fixed bottom-0 inset-x-0 z-30 bg-white border-t border-slate-200">
+      <div className="mx-auto max-w-[420px] grid grid-cols-5">
+        {items.map(it => (
+          <button key={it.key} onClick={() => setTab(it.key)} className={`py-3 text-sm ${tab===it.key?"text-[#22324D] font-medium":"text-slate-500"}`}>{it.label}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Badge({ children, color }:{ children:any; color:string }){
+  return <span className="px-2.5 py-1 rounded-full text-xs" style={{background:`${color}20`, color}}>{children}</span>;
+}
+
+function AccountMenu({ user, onSignIn, onAdmin, onSignOut, onOpenWashes }:{ user: User | null; onSignIn: ()=>void; onAdmin: ()=>void; onSignOut: ()=>void; onOpenWashes: ()=>void }){
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button onClick={()=>setOpen(o=>!o)} className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center border border-slate-200">
+        {user ? user.name.charAt(0) : "G"}
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-xl shadow p-2">
+          {user ? (
+            <>
+              <div className="px-2 py-2 text-sm">
+                <div className="font-medium">{user.name}</div>
+                <div className="text-slate-500">{user.email}</div>
+                <div className="mt-1 text-[11px] text-slate-500">Role: {user.role === 'admin' ? 'Admin' : 'Student'}</div>
+              </div>
+              <hr className="my-2" />
+              <button onClick={()=>{ onOpenWashes(); setOpen(false);} } className="w-full text-left px-2 py-2 text-sm hover:bg-slate-50 rounded-lg flex items-center gap-2"><IconSpin className="w-4 h-4"/> My washes</button>
+              <button onClick={onSignOut} className="w-full text-left px-2 py-2 text-sm hover:bg-slate-50 rounded-lg text-red-600">Sign out</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onSignIn} className="w-full text-left px-2 py-2 text-sm hover:bg-slate-50 rounded-lg flex items-center gap-2">
+                <IconGoogle className="w-4 h-4"/> Student login with Google
+              </button>
+              <button onClick={onAdmin} className="mt-1 w-full text-left px-2 py-2 text-sm hover:bg-slate-50 rounded-lg flex items-center gap-2">
+                <IconShield className="w-4 h-4"/> Admin login
+              </button>
+              <div className="px-2 pt-2 text-xs text-slate-500">Admin dashboard scaffolding only (student view is functional).</div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MyWashes({ washes, machines, onOpenMachine, onCollect }:{
+  washes: Wash[];
+  machines: Machine[];
+  onOpenMachine: (id:string)=>void;
+  onCollect: (id:string)=>void;
+}){
+  const active = washes.filter(w => w.status === 'RUNNING' || w.status === 'AWAITING');
+  const history = washes.filter(w => w.status === 'COLLECTED');
+  const etaFor = (id:string) => machines.find(m => m.id === id)?.eta;
+
+  return (
+    <div className="px-4 pb-28">
+      <h2 className="text-lg font-semibold mt-4 mb-2 flex items-center gap-2"><IconSpin className="w-5 h-5"/> My washes</h2>
+
+      {active.length === 0 ? (
+        <div className="mt-3 p-4 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 flex items-center gap-2"><IconWasherHappy className="w-5 h-5"/> No active washes.
+        </div>
+      ) : (
+        <div className="space-y-3 mt-2">
+          {active.map(w => (
+            <div key={w.id} className="rounded-2xl bg-white border border-slate-200 p-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <IconWasher className="w-8 h-8"/>
+                  <div>
+                    <div className="font-medium">{w.machineLabel} · Floor {w.floor}</div>
+                    {w.status === 'RUNNING' && <div className="text-sm text-slate-500">ETA: {etaFor(w.machineId) ?? '—'} min</div>}
+                    {w.status === 'AWAITING' && <div className="text-sm text-slate-500">Finished · waiting pickup</div>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={()=>onOpenMachine(w.machineId)} className="px-3 py-1.5 rounded-lg border border-slate-200 text-sm">View</button>
+                  {w.status === 'AWAITING' && (
+                    <button onClick={()=>onCollect(w.machineId)} className="px-3 py-1.5 rounded-lg bg-[#39C27A] text-white text-sm">Collected</button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <h3 className="text-base font-semibold mt-6 mb-2 text-slate-700 flex items-center gap-2"><IconClock className="w-4 h-4"/> History</h3>
+      {history.length === 0 ? (
+        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-sm">You’ll see your past washes here.</div>
+      ) : (
+        <div className="space-y-2">
+          {history.map(w => (
+            <div key={w.id} className="rounded-xl bg-white border border-slate-200 p-3 text-sm flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <IconWasher className="w-6 h-6"/>
+                <div>
+                  <div className="font-medium">{w.machineLabel}</div>
+                  <div className="text-slate-500">{new Date(w.startAt).toLocaleTimeString()} → {w.endAt ? new Date(w.endAt).toLocaleTimeString() : '—'}</div>
+                </div>
+              </div>
+              <span className="px-2 py-1 text-xs rounded-full" style={{background:`${COLORS.success}20`, color:COLORS.success}}>Collected</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Icons (inline SVG for friendliness)
+function IconWasher({ className = "w-5 h-5" }:{ className?: string }){
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.sub} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3.5" y="2.5" width="17" height="19" rx="2"/>
+      <circle cx="12" cy="13" r="5" fill="#E6F2FF" stroke={COLORS.info}/>
+      <circle cx="7" cy="6" r="1"/><circle cx="10" cy="6" r="1"/>
+    </svg>
+  );
+}
+function IconWasherHappy({ className = "w-5 h-5" }:{ className?: string }){
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.sub} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3.5" y="2.5" width="17" height="19" rx="2"/>
+      <circle cx="12" cy="13" r="5" fill="#E6FFE9" stroke={COLORS.success}/>
+      <path d="M10 14c.5.7 1.5.7 2 0" stroke={COLORS.success}/>
+      <circle cx="7" cy="6" r="1"/><circle cx="10" cy="6" r="1"/>
+    </svg>
+  );
+}
+function IconRooms({ className = "w-6 h-6" }:{ className?: string }){
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.sub} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="5" width="18" height="14" rx="2"/>
+      <path d="M8 5v14M16 5v14"/>
+      <path d="M10 9h4M10 13h4"/>
+    </svg>
+  );
+}
+function IconSpin({ className = "w-4 h-4" }:{ className?: string }){
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.info} strokeWidth="1.5">
+      <circle cx="12" cy="12" r="8" strokeOpacity="0.25"/>
+      <path d="M20 12a8 8 0 0 1-8 8" />
+    </svg>
+  );
+}
+function IconBell({ className = "w-4 h-4" }:{ className?: string }){
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.warn} strokeWidth="1.5">
+      <path d="M6 8a6 6 0 0 1 12 0v4l2 3H4l2-3V8"/>
+      <path d="M9 19a3 3 0 0 0 6 0"/>
+    </svg>
+  );
+}
+function IconWrench({ className = "w-4 h-4" }:{ className?: string }){
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.danger} strokeWidth="1.5">
+      <path d="M14.7 6.3a4 4 0 1 0-1 6.4L5 21l-2-2 8.7-8.7a4 4 0 0 0 3-4z"/>
+    </svg>
+  );
+}
+function IconCheck({ className = "w-4 h-4" }:{ className?: string }){ return (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.success} strokeWidth="1.5"><path d="M20 6 9 17l-5-5"/></svg>
+);}
+function IconClock({ className = "w-4 h-4" }:{ className?: string }){ return (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.sub} strokeWidth="1.5"><circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/></svg>
+);}
+function IconGoogle({ className = "w-4 h-4" }:{ className?: string }){ return (
+  <svg className={className} viewBox="0 0 24 24"><path fill="#EA4335" d="M12 10v4h5.6c-.2 1.3-1.7 3.6-5.6 3.6A6.4 6.4 0 1 1 12 5.6c1.8 0 3 .8 3.7 1.5l2.5-2.5C16.8 3 14.6 2 12 2 6.9 2 2.7 6.2 2.7 11.3S6.9 20.7 12 20.7c6.2 0 8.5-4.3 8.5-6.3 0-.4 0-.7-.1-1H12z"/><path fill="#34A853" d="M3.9 7.7l3.3 2.4C8 8.3 9.9 7 12 7c1.8 0 3 .8 3.7 1.5l2.5-2.5C16.8 3 14.6 2 12 2c-3.5 0-6.5 1.8-8.1 4.4z"/><path fill="#FBBC05" d="M12 22c2.6 0 4.8-.9 6.4-2.4l-3-2.5c-.8.5-1.9.9-3.4.9-2.9 0-5.3-2-6.1-4.7H3.9C4.9 17.7 8.1 22 12 22z"/><path fill="#4285F4" d="M20.5 12.8c.2-.4.3-.8.3-1.3 0-.5-.1-.9-.2-1.4H12v4h8.5z"/></svg>
+);}
+function IconShield({ className = "w-4 h-4" }:{ className?: string }){ return (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.sub} strokeWidth="1.5"><path d="M12 3l7 4v5c0 5-3.5 9-7 9s-7-4-7-9V7l7-4z"/></svg>
+);}
+function IconWave({ className = "w-6 h-6" }:{ className?: string }){ return (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke={COLORS.info} strokeWidth="1.5"><path d="M3 15c2 0 2-6 4-6s2 6 4 6 2-6 4-6 2 6 4 6"/></svg>
+);}
+
+// --- Machine detail & report
+function MachineSheet({ m, close, startWash, markCollected, nudge, onReport, isStudent }:{
+  m: Machine;
+  close: ()=>void;
+  startWash: (m:Machine, minutes?:number)=>void;
+  markCollected: (m:Machine)=>void;
+  nudge: (m:Machine)=>void;
+  onReport: (entry: any, affectStatus: boolean)=>void;
+  isStudent: boolean;
+}){
+  const [minutes, setMinutes] = useState(m.eta ?? 35);
+  const [reportOpen, setReportOpen] = useState(false);
+
+  useEffect(() => { setMinutes(m.eta ?? 35); }, [m.id]);
+
+  return (
+    <div className="fixed inset-0 z-40 bg-black/40 flex items-end" onClick={close}>
+      <div className="w-full max-w-[420px] mx-auto bg-white rounded-t-3xl p-5" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <IconWasher className="w-5 h-5"/>
+            <div>
+              <div className="text-xl font-semibold">{m.label}</div>
+              <div className="text-sm text-slate-500">Floor {m.floor} · {m.hostel}</div>
+            </div>
+          </div>
+          <button onClick={close} className="text-slate-500">Close</button>
+        </div>
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 mb-4">
+          {m.status === "FREE" && (
+            <div>
+              <div className="font-medium mb-1 flex items-center gap-2"><IconCheck/> <span>Status:</span> <span className="text-[#39C27A]">Free</span></div>
+              <div className="text-sm text-slate-600">You can start a wash now. If IoT is unavailable, set expected duration manually.</div>
+              <div className="mt-3 flex items-center gap-2">
+                <label className="text-sm text-slate-600">Duration</label>
+                <input aria-label="Duration" type="number" value={minutes} onChange={e=>setMinutes(parseInt(e.target.value||"0"))} className="w-20 px-2 py-1 border rounded-lg"/> <span className="text-sm text-slate-500">min</span>
+              </div>
+            </div>
+          )}
+          {m.status === "RUNNING" && (
+            <div>
+              <div className="font-medium mb-1 flex items-center gap-2"><IconSpin/> <span>Status:</span> <span className="text-[#62B6F9]">Running</span></div>
+              <div className="text-sm text-slate-600">ETA: {m.eta ?? minutes} min</div>
+              <div className="text-sm text-slate-600 mt-2">We’ll notify you when it finishes.</div>
+            </div>
+          )}
+          {m.status === "AWAITING" && (
+            <div>
+              <div className="font-medium mb-1 flex items-center gap-2"><IconBell/> <span>Status:</span> <span className="text-[#F4AE4C]">Cycle complete</span></div>
+              <div className="text-sm text-slate-600">Finished {m.lastCompletedAt ? Math.round((Date.now()-m.lastCompletedAt)/60000) : 0} min ago.</div>
+            </div>
+          )}
+          {m.status === "MAINT" && (
+            <div>
+              <div className="font-medium mb-1 flex items-center gap-2"><IconWrench/> <span>Status:</span> <span className="text-[#E46A6A]">Maintenance</span></div>
+              <div className="text-sm text-slate-600">This machine is temporarily unavailable.</div>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {m.status === "FREE" && (
+            <button onClick={()=>startWash(m, minutes)} className="col-span-2 bg-[#22324D] text-white rounded-xl py-3">Start wash</button>
+          )}
+          {m.status === "RUNNING" && (
+            <button className="bg-white border border-slate-200 rounded-xl py-3">Notify on finish</button>
+          )}
+          {m.status === "AWAITING" && (
+            <>
+              <button onClick={()=>nudge(m)} className="bg-white border border-slate-200 rounded-xl py-3">Nudge current user</button>
+              <button onClick={()=>markCollected(m)} className="bg-[#39C27A] text-white rounded-xl py-3">Mark collected</button>
+            </>
+          )}
+          <button onClick={()=>setReportOpen(true)} className="bg-white border border-slate-200 rounded-xl py-3">Report / Flag</button>
+        </div>
+
+        {reportOpen && (
+          <ReportModal
+            machineId={m.id}
+            onClose={()=>setReportOpen(false)}
+            onSubmit={(entry, affect)=>{ setReportOpen(false); onReport(entry, affect); }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReportModal({ machineId, onClose, onSubmit }:{ machineId:string; onClose: ()=>void; onSubmit:(entry: any, affectStatus: boolean)=>void }){
+  const [reason, setReason] = useState("Not working");
+  const [notes, setNotes] = useState("");
+  const [photo, setPhoto] = useState<string | undefined>(undefined);
+  const [affect, setAffect] = useState(true); // if true and reason severe, mark MAINT
+
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => setPhoto(reader.result as string);
+    reader.readAsDataURL(f);
+  };
+
+  const submit = () => {
+    const entry = {
+      id: `r-${Date.now()}`,
+      machineId,
+      reason,
+      notes,
+      photoDataUrl: photo,
+      createdAt: nowTime(),
+    };
+    const severe = reason === "Not working" || reason === "Leaking water";
+    onSubmit(entry, affect && severe);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end" onClick={onClose}>
+      <div className="w-full max-w-[420px] mx-auto bg-white rounded-t-3xl p-5" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-lg font-semibold">Report machine</div>
+          <button onClick={onClose} className="text-slate-500">Close</button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-sm text-slate-600">Reason</label>
+            <select value={reason} onChange={e=>setReason(e.target.value)} className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200">
+              <option>Not working</option>
+              <option>Needs cleanup</option>
+              <option>Leaking water</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-slate-600">Notes (optional)</label>
+            <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={3} className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200" placeholder="Add a brief note" />
+          </div>
+          <div>
+            <label className="text-sm text-slate-600">Photo (optional)</label>
+            <input type="file" accept="image/*" onChange={onFile} className="mt-1 w-full" />
+            {photo && (<img src={photo} alt="Report" className="mt-2 w-full rounded-lg border" />)}
+          </div>
+          <div className="flex items-center gap-2">
+            <input id="affect" type="checkbox" checked={affect} onChange={e=>setAffect(e.target.checked)} />
+            <label htmlFor="affect" className="text-sm text-slate-600">Mark machine as Maintenance if issue is severe</label>
+          </div>
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button onClick={onClose} className="border border-slate-200 rounded-xl py-3">Cancel</button>
+            <button onClick={submit} className="bg-[#22324D] text-white rounded-xl py-3">Submit report</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NotifDrawer({ notices, close }:{ notices: Notice[]; close: ()=>void }){
+  return (
+    <div className="fixed inset-0 z-40 bg-black/40 flex" onClick={close}>
+      <div className="ml-auto h-full w-full max-w-[420px] bg-white p-5" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-lg font-semibold">Notifications</div>
+          <button onClick={close} className="text-slate-500">Close</button>
+        </div>
+        <div className="space-y-3">
+          {notices.length === 0 && (
+            <div className="text-slate-500">No notifications yet.</div>
+          )}
+          {notices.map(n => (
+            <div key={n.id} className="border border-slate-200 rounded-xl p-3 bg-slate-50">
+              <div className="font-medium">{n.title}</div>
+              <div className="text-xs text-slate-500 mt-1">{n.time}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('service-worker.js');
+      });
+    }
+  </script>
+</body>
+</html>
