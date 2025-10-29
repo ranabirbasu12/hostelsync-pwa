@@ -1,0 +1,385 @@
+/*
+ * Global stylesheet for HostelSync PWA.
+ * Defines a soft, modern palette and reusable components.
+ */
+
+/* Colour palette */
+:root {
+  --primary-color: #1F3A5F;
+  --accent-color: #3BAEFD;
+  --success-color: #2CCB69;
+  --attention-color: #FFB020;
+  --error-color: #E25555;
+  --background-color: #F7F9FC;
+  --surface-color: #FFFFFF;
+  --text-color: #0E1320;
+  --text-muted: #5A6270;
+  --border-radius: 12px;
+  --card-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', sans-serif;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+header {
+  padding: 1rem;
+  background-color: var(--surface-color);
+  box-shadow: var(--card-shadow);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+main {
+  flex: 1;
+  padding: 1rem;
+}
+
+/* Module grid on home */
+.module-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.module-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 1rem;
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--card-shadow);
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.1s ease-in-out;
+}
+
+.module-card:hover {
+  transform: translateY(-2px);
+}
+
+.module-card.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.module-card .module-icon {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+.module-card h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.module-card p {
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* Bottom navigation */
+.bottom-nav {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  padding: 0.5rem 0;
+  background-color: var(--surface-color);
+  box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05);
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+}
+
+.bottom-nav a {
+  flex: 1;
+  text-align: center;
+  font-size: 0.75rem;
+  text-decoration: none;
+  color: var(--text-muted);
+  padding: 0.5rem 0;
+}
+
+.bottom-nav a.active {
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.bottom-nav a .icon {
+  font-size: 1.25rem;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+/* Laundry page */
+.laundry-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.laundry-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.selector {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.selector label {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.selector select {
+  padding: 0.5rem;
+  font-size: 0.875rem;
+  border-radius: var(--border-radius);
+  border: 1px solid #d0d7e5;
+  background-color: var(--surface-color);
+}
+
+/* Status summary */
+.status-summary {
+  display: flex;
+  gap: 1rem;
+  margin: 1rem 0;
+  flex-wrap: wrap;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: white;
+}
+
+.status-free {
+  background-color: var(--success-color);
+}
+
+.status-running {
+  background-color: var(--accent-color);
+}
+
+.status-awaiting {
+  background-color: var(--attention-color);
+}
+
+.status-maintenance {
+  background-color: var(--error-color);
+}
+
+/* Machines grid */
+.machines-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1rem;
+}
+
+.machine-card {
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--card-shadow);
+  padding: 0.75rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  transition: transform 0.1s ease-in-out;
+  position: relative;
+}
+
+.machine-card:hover {
+  transform: translateY(-2px);
+}
+
+.machine-icon {
+  font-size: 2rem;
+}
+
+.machine-name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.machine-subtext {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.machine-status {
+  align-self: flex-start;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: white;
+}
+
+/* Overlay modal for machine details */
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  backdrop-filter: blur(4px);
+  background-color: rgba(0, 0, 0, 0.4);
+  display: none;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+}
+
+.overlay.active {
+  display: flex;
+}
+
+.modal {
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  padding: 1rem;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: var(--card-shadow);
+}
+
+.modal h3 {
+  margin-top: 0;
+}
+
+.modal .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.modal button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: var(--border-radius);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.btn-secondary {
+  background-color: #E5EAF2;
+  color: var(--primary-color);
+}
+
+/* Alerts list */
+.alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.alert-item {
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  padding: 0.75rem;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.875rem;
+}
+
+.alert-item .icon {
+  font-size: 1.25rem;
+}
+
+/* My washes list */
+.wash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.wash-item {
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  padding: 0.75rem;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.875rem;
+}
+
+.wash-item .info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.wash-item .status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.wash-item button {
+  padding: 0.25rem 0.75rem;
+  border: none;
+  border-radius: var(--border-radius);
+  background-color: var(--accent-color);
+  color: white;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+/* Banner for all busy machines */
+.busy-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: #FFF5E5;
+  border-left: 4px solid var(--attention-color);
+  padding: 0.5rem 1rem;
+  border-radius: var(--border-radius);
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.busy-banner button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: var(--border-radius);
+  background-color: var(--accent-color);
+  color: white;
+  font-size: 0.75rem;
+  cursor: pointer;
+}

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Laundry · HostelSync</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="script.js"></script>
+  </head>
+  <body class="laundry-page">
+    <header>
+      <h1>Laundry</h1>
+    </header>
+    <main>
+      <div class="laundry-header">
+        <h2>Select Location</h2>
+        <div class="selector">
+          <label for="hostel-select">Hostel</label>
+          <select id="hostel-select"></select>
+          <label for="floor-select">Floor</label>
+          <select id="floor-select"></select>
+        </div>
+      </div>
+      <div id="summary-container" class="status-summary"></div>
+      <div id="busy-banner" class="busy-banner" style="display: none;">
+        <span>All machines are busy.</span>
+        <button id="notify-button">Notify me when free</button>
+      </div>
+      <div id="machines-grid" class="machines-grid"></div>
+    </main>
+    <nav class="bottom-nav">
+      <a href="index.html">
+        <span class="icon">🏠</span>
+        Home
+      </a>
+      <a href="laundry.html" class="active">
+        <span class="icon">🧺</span>
+        Laundry
+      </a>
+      <a href="my-washes.html">
+        <span class="icon">🕒</span>
+        My Washes
+      </a>
+      <a href="alerts.html">
+        <span class="icon">🔔</span>
+        Alerts
+      </a>
+    </nav>
+    <!-- Overlay for machine details -->
+    <div id="overlay" class="overlay">
+      <div class="modal">
+        <h3 id="modal-title">Machine</h3>
+        <p id="modal-status">Status details</p>
+        <div id="modal-actions" class="actions"></div>
+      </div>
+    </div>
+  </body>
+</html>
