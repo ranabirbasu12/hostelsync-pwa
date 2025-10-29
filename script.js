@@ -12,8 +12,805 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// -----------------------------------------------------------------------------
+// HostelSync State Management and Helpers
+//
+// To bring the demo closer to the React version, we persist a small state
+// object in localStorage.  This allows machines, washes and notifications to
+// survive across page reloads.  Machines are initialised with random
+// statuses, similar to the original mock, and a minute-level timer drives
+// countdowns, notifications and state transitions.  Each page reads from the
+// shared state and re-renders when necessary.
+
+// Bump this number whenever the state schema or default machine setup changes.
+// Incrementing the version forces a reset of the persisted state in localStorage.
+const STATE_VERSION = 3;
+let state = null;
+
+// Global error handler (disabled in production).  In development you can
+// uncomment the following to surface errors in an alert.  The default
+// behaviour is to silently log errors to the console.
+// Global error handler disabled in production. Uncomment for development if needed.
+// window.onerror = function(message, source, lineno, colno, error) {
+//   alert('Error: ' + message + '\n' + source + ':' + lineno + ':' + colno);
+// };
+let tickIntervalStarted = false;
+
+// Load state from localStorage.  If parsing fails or no state exists, null is
+// returned.
+function loadState() {
+  const data = localStorage.getItem('hostelsync_state');
+  if (data) {
+    try {
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Persist current state back to localStorage.
+function saveState() {
+  if (state) {
+    localStorage.setItem('hostelsync_state', JSON.stringify(state));
+  }
+}
+
+// Create an array of machine objects with random starting statuses.  This
+// function assumes a single hostel (LVH) with 4 floors and 5 machines per
+// floor.  Machines are labelled like M-1A, M-1B, etc.
+function makeMachines() {
+  // Generate machines for all four hostels (LVH, OH, WH, NH).  Each hostel
+  // contains 4 floors with 5 machines per floor.  Statuses are
+  // randomised for demonstration and align with the original React mock.
+  const hostels = ['LVH', 'OH', 'WH', 'NH'];
+  const machines = [];
+  hostels.forEach((hostel) => {
+    const floors = 4;
+    for (let floor = 1; floor <= floors; floor++) {
+      for (let i = 1; i <= 5; i++) {
+        const id = `${hostel}-${floor}-${i}`;
+        const label = `M-${floor}${String.fromCharCode(64 + i)}`;
+        const running = Math.random() < 0.45;
+        const awaiting = !running && Math.random() < 0.25;
+        machines.push({
+          id,
+          label,
+          hostel,
+          floor,
+          status: running ? 'RUNNING' : awaiting ? 'AWAITING' : 'FREE',
+          eta: running ? Math.floor(8 + Math.random() * 28) : undefined,
+          lastCompletedAt: awaiting
+            ? Date.now() - Math.floor(Math.random() * 1000 * 60 * 30)
+            : undefined,
+        });
+      }
+    }
+  });
+  return machines;
+}
+
+// Create a list of common rooms for booking.  Each room has an id, a
+// human-readable label and a flag indicating whether AC is available.  The
+// first half of the rooms have AC.
+function makeRooms() {
+  const rooms = [];
+  const total = 8;
+  for (let i = 1; i <= total; i++) {
+    rooms.push({
+      id: `CR-${i}`,
+      label: `Common Room ${i}`,
+      hasAC: i <= total / 2,
+    });
+  }
+  return rooms;
+}
+
+// Initialise state if none exists.  We seed machines with random data and
+// prepare empty arrays for washes, notifications and reports.  A watchFree
+// structure tracks which floors the user wants to be alerted about when a
+// machine becomes free.
+function initState() {
+  state = loadState();
+  // If there is no saved state OR the saved state appears invalid
+  // (e.g. no machines, or machine statuses are not one of the four
+  // recognised values), then recreate a fresh state.  This helps avoid
+  // issues if the data model changes between versions.
+  const validStatuses = ['FREE','RUNNING','AWAITING','MAINT'];
+  const needsReset =
+    !state ||
+    state.version !== STATE_VERSION ||
+    !state.machines ||
+    state.machines.length === 0 ||
+    state.machines.some((m) => !validStatuses.includes(m.status)) ||
+    !state.rooms ||
+    !Array.isArray(state.rooms) ||
+    state.rooms.length === 0 ||
+    !state.bookings ||
+    !Array.isArray(state.bookings);
+
+  if (needsReset) {
+    state = {
+      version: STATE_VERSION,
+      machines: makeMachines(),
+      washes: [],
+      notices: [],
+      reports: [],
+      watchFree: {},
+      user: null,
+      // Add rooms and bookings for the new common room module.  Rooms are
+      // pre-generated and bookings start empty.  A booking records which
+      // room was requested, the time range, a reason and its approval
+      // status.  Statuses include PENDING, APPROVED, REJECTED and
+      // CANCELLED.
+      rooms: makeRooms(),
+      bookings: [],
+    };
+    // Initialise watchFree flags for all hostels and floors present in machines.
+    const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
+    hostels.forEach((hostel) => {
+      state.watchFree[hostel] = {};
+      const floors = Array.from(
+        new Set(state.machines.filter((m) => m.hostel === hostel).map((m) => m.floor))
+      );
+      floors.forEach((floor) => {
+        state.watchFree[hostel][floor] = false;
+      });
+    });
+    saveState();
+  }
+}
+
+// Push a notification into the notice list.  If the Web Notifications API is
+// available and permissions are granted, also show a native toast.  Notices
+// are capped at 50 entries to avoid uncontrolled growth.
+function pushNotice(title, kind) {
+  const notice = {
+    id: `n-${Date.now()}`,
+    title,
+    time: new Date().toLocaleTimeString(),
+    kind,
+  };
+  state.notices.unshift(notice);
+  if (state.notices.length > 50) state.notices.pop();
+  if ('Notification' in window) {
+    if (Notification.permission === 'granted') {
+      new Notification(title);
+    } else if (Notification.permission !== 'denied') {
+      Notification.requestPermission().then((perm) => {
+        if (perm === 'granted') new Notification(title);
+      });
+    }
+  }
+  saveState();
+}
+
+// Start a wash on the given machine with the specified duration.  The machine
+// status is switched to RUNNING, an ETA is set, and a new wash record is
+// inserted into the wash history.  A notification is emitted.
+function startWash(machine, minutes) {
+  state.machines = state.machines.map((m) =>
+    m.id === machine.id ? { ...m, status: 'RUNNING', eta: minutes } : m
+  );
+  state.washes.unshift({
+    id: `w-${Date.now()}`,
+    machineId: machine.id,
+    machineLabel: machine.label,
+    hostel: machine.hostel,
+    floor: machine.floor,
+    startAt: Date.now(),
+    status: 'RUNNING',
+  });
+  pushNotice(`Started wash on ${machine.label}.`, 'info');
+  saveState();
+}
+
+// Mark a machine as collected.  This frees the machine and updates any
+// corresponding wash entries to the COLLECTED status.  A notification
+// acknowledges the action.
+function markCollected(machine) {
+  state.machines = state.machines.map((m) =>
+    m.id === machine.id
+      ? { ...m, status: 'FREE', eta: undefined, lastCompletedAt: undefined }
+      : m
+  );
+  state.washes = state.washes.map((w) =>
+    w.machineId === machine.id && (w.status === 'AWAITING' || w.status === 'RUNNING')
+      ? { ...w, status: 'COLLECTED', endAt: Date.now() }
+      : w
+  );
+  pushNotice(`Thank you! ${machine.label} is free now.`, 'success');
+  saveState();
+}
+
+// Send a gentle nudge to the current user of the machine.  No state changes
+// occur but a notice is generated.
+function nudgeUser(machine) {
+  pushNotice(`A gentle nudge was sent for ${machine.label}.`, 'info');
+}
+
+// Submit a report for a machine.  The entry is stored in the reports array.
+// If affectStatus is true and the reason suggests the machine is broken,
+// the machine’s status is updated to MAINT.  A notification logs the report.
+function submitReport(machineId, reason, notes, photoDataUrl, affectStatus) {
+  const entry = {
+    id: `r-${Date.now()}`,
+    machineId,
+    reason,
+    notes,
+    photoDataUrl,
+    createdAt: new Date().toLocaleString(),
+  };
+  state.reports.unshift(entry);
+  pushNotice(`Report submitted for ${machineId}.`, 'report');
+  if (affectStatus) {
+    state.machines = state.machines.map((m) =>
+      m.id === machineId ? { ...m, status: 'MAINT', eta: undefined } : m
+    );
+  }
+  saveState();
+}
+
+// Minute-level tick handler.  Decrements ETAs, transitions RUNNING machines
+// into AWAITING when complete, and fires notifications.  WatchFree flags
+// trigger notifications when a machine becomes free on a watched floor.  If
+// the current page is laundry, my-washes or alerts we re-render the
+// respective views after state changes.  Only one interval is ever started.
+function startTick() {
+  if (tickIntervalStarted) return;
+  tickIntervalStarted = true;
+  setInterval(() => {
+    // snapshot of free machine counts before updates
+    const freeBefore = {};
+    state.machines.forEach((m) => {
+      if (!freeBefore[m.hostel]) freeBefore[m.hostel] = {};
+      if (!freeBefore[m.hostel][m.floor]) freeBefore[m.hostel][m.floor] = 0;
+      if (m.status === 'FREE') freeBefore[m.hostel][m.floor]++;
+    });
+    // countdown running machines
+    state.machines = state.machines.map((m) => {
+      if (m.status === 'RUNNING' && m.eta != null) {
+        const eta = m.eta - 1;
+        if (eta === 3) {
+          pushNotice(`${m.label} finishing in ~3 minutes.`, 'info');
+        }
+        if (eta <= 0) {
+          // transition to awaiting
+          pushNotice(`${m.label} finished. Please collect clothes.`, 'success');
+          // update washes
+          state.washes = state.washes.map((w) =>
+            w.machineId === m.id && w.status === 'RUNNING'
+              ? { ...w, status: 'AWAITING', endAt: Date.now() }
+              : w
+          );
+          return {
+            ...m,
+            status: 'AWAITING',
+            eta: undefined,
+            lastCompletedAt: Date.now(),
+          };
+        }
+        return { ...m, eta };
+      }
+      return m;
+    });
+    // snapshot of free machine counts after updates
+    const freeAfter = {};
+    state.machines.forEach((m) => {
+      if (!freeAfter[m.hostel]) freeAfter[m.hostel] = {};
+      if (!freeAfter[m.hostel][m.floor]) freeAfter[m.hostel][m.floor] = 0;
+      if (m.status === 'FREE') freeAfter[m.hostel][m.floor]++;
+    });
+    // check watchFree flags
+    Object.keys(state.watchFree).forEach((hostel) => {
+      Object.keys(state.watchFree[hostel]).forEach((floor) => {
+        if (state.watchFree[hostel][floor]) {
+          const before = freeBefore[hostel]?.[floor] ?? 0;
+          const after = freeAfter[hostel]?.[floor] ?? 0;
+          if (before === 0 && after > 0) {
+            pushNotice(`A machine is now free on Floor ${floor}.`, 'success');
+            state.watchFree[hostel][floor] = false;
+          }
+        }
+      });
+    });
+    saveState();
+    // If on interactive pages re-render to reflect updates
+    if (document.body.classList.contains('laundry-page')) {
+      updateLaundryView();
+    }
+    if (document.body.classList.contains('my-washes-page')) {
+      renderMyWashes();
+    }
+    if (document.body.classList.contains('alerts-page')) {
+      renderAlerts();
+    }
+  }, 60 * 1000);
+}
+
+// Helper to compute counts of machine statuses for a list of machines
+function computeCounts(machines) {
+  const counts = { FREE: 0, RUNNING: 0, AWAITING: 0, MAINT: 0 };
+  machines.forEach((m) => {
+    counts[m.status]++;
+  });
+  return counts;
+}
+
+// -----------------------------------------------------------------------------
+// Room booking logic
+//
+// A room booking stores information about the room (id and label), the
+// requested time range, the reason for booking and its current status.  When a
+// student submits a booking request, a new entry is added to state.bookings
+// with status PENDING.  A simulated approval routine automatically
+// transitions the booking to APPROVED after a short delay.  Students can
+// cancel or extend bookings, and the UI can display active and past bookings.
+
+// Determine whether a new booking for the given room and time range
+// conflicts with any existing booking.  Conflicts arise when the requested
+// start time is before an existing booking’s end and the requested end time is
+// after an existing booking’s start, and the existing booking is either
+// pending or approved.
+function checkConflict(roomId, startAt, endAt) {
+  return state.bookings.some((b) => {
+    if (b.roomId !== roomId) return false;
+    // Only consider bookings that are active or awaiting approval
+    if (b.status === 'CANCELLED' || b.status === 'REJECTED') return false;
+    return startAt < b.endAt && endAt > b.startAt;
+  });
+}
+
+// Submit a new booking request.  Adds a booking with status PENDING to
+// state.bookings, notifies the user and schedules a simulated approval.
+function submitBooking(room, startAt, endAt, reason) {
+  const booking = {
+    id: `b-${Date.now()}`,
+    roomId: room.id,
+    roomLabel: room.label,
+    hasAC: room.hasAC,
+    startAt,
+    endAt,
+    reason,
+    status: 'PENDING',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  state.bookings.unshift(booking);
+  pushNotice(`Request submitted for ${room.label}.`, 'info');
+  saveState();
+  simulateApproval(booking.id);
+  // update bookings view if present
+  if (typeof renderMyBookings === 'function') renderMyBookings();
+  if (typeof updateRoomsView === 'function') updateRoomsView();
+}
+
+// Simulate admin approval.  After a short delay, if the booking is still
+// pending, mark it as approved and notify the user.  In a real system this
+// would involve server-side logic and admin interaction.
+function simulateApproval(bookingId) {
+  setTimeout(() => {
+    const idx = state.bookings.findIndex((b) => b.id === bookingId);
+    if (idx >= 0) {
+      const booking = state.bookings[idx];
+      if (booking.status === 'PENDING') {
+        state.bookings[idx] = {
+          ...booking,
+          status: 'APPROVED',
+          updatedAt: Date.now(),
+        };
+        pushNotice(
+          `Booking approved for ${booking.roomLabel}. Please keep the room clean and tidy.`,
+          'success'
+        );
+        saveState();
+        if (typeof renderMyBookings === 'function') renderMyBookings();
+        if (typeof updateRoomsView === 'function') updateRoomsView();
+      }
+    }
+  }, 5000);
+}
+
+// Cancel an existing booking.  Changes status to CANCELLED and notifies
+// the user.  Only bookings in PENDING or APPROVED state can be cancelled.
+function cancelBooking(id) {
+  const idx = state.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = state.bookings[idx];
+    if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
+      state.bookings[idx] = {
+        ...booking,
+        status: 'CANCELLED',
+        updatedAt: Date.now(),
+      };
+      pushNotice(`Booking cancelled for ${booking.roomLabel}.`, 'info');
+      saveState();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      if (typeof updateRoomsView === 'function') updateRoomsView();
+    }
+  }
+}
+
+// Extend an existing booking by requesting a new end time.  Sets the booking
+// status back to PENDING and invokes simulated approval.  Only approved
+// bookings can be extended.
+function extendBooking(id, newEndAt) {
+  const idx = state.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = state.bookings[idx];
+    if (booking.status === 'APPROVED') {
+      // check that the extension does not exceed 24 hours and does not
+      // conflict with other bookings
+      const diff = newEndAt - booking.startAt;
+      if (diff > 24 * 60 * 60 * 1000) {
+        alert('Extension exceeds 24 hours from start time.');
+        return;
+      }
+      if (checkConflict(booking.roomId, booking.startAt, newEndAt)) {
+        alert('Requested extension overlaps with another booking.');
+        return;
+      }
+      state.bookings[idx] = {
+        ...booking,
+        endAt: newEndAt,
+        status: 'PENDING',
+        updatedAt: Date.now(),
+      };
+      pushNotice(`Extension requested for ${booking.roomLabel}.`, 'info');
+      saveState();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      simulateApproval(booking.id);
+    }
+  }
+}
+
+// Modify an existing booking by specifying a new start and end time and
+// optionally a new reason.  The booking returns to PENDING status pending
+// approval.  Only pending or approved bookings can be modified.
+function modifyBooking(id, newStartAt, newEndAt, newReason) {
+  const idx = state.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = state.bookings[idx];
+    if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
+      const diff = newEndAt - newStartAt;
+      if (diff <= 0) {
+        alert('End time must be after start time.');
+        return;
+      }
+      if (diff > 24 * 60 * 60 * 1000) {
+        alert('Bookings cannot exceed 24 hours.');
+        return;
+      }
+      if (checkConflict(booking.roomId, newStartAt, newEndAt)) {
+        alert('Requested times overlap with another booking.');
+        return;
+      }
+      state.bookings[idx] = {
+        ...booking,
+        startAt: newStartAt,
+        endAt: newEndAt,
+        reason: newReason ?? booking.reason,
+        status: 'PENDING',
+        updatedAt: Date.now(),
+      };
+      pushNotice(`Booking modified for ${booking.roomLabel}.`, 'info');
+      saveState();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      simulateApproval(booking.id);
+    }
+  }
+}
+
+// Initialise the rooms page.  Renders a list of rooms and their current
+// availability, and wires up a modal for creating bookings.  A global
+// updateRoomsView() is defined so other functions can re-render.
+function initRoomsPage() {
+  const roomsGrid = document.getElementById('rooms-grid');
+  const acFilter = document.getElementById('ac-filter');
+  function updateRoomsView() {
+    roomsGrid.innerHTML = '';
+    const filterAC = acFilter ? acFilter.checked : false;
+    const now = Date.now();
+    state.rooms.forEach((room) => {
+      if (filterAC && !room.hasAC) return;
+      const card = document.createElement('div');
+      card.className = 'machine-card';
+      // Icon (door emoji)
+      const icon = document.createElement('div');
+      icon.className = 'machine-icon';
+      icon.textContent = '🚪';
+      card.appendChild(icon);
+      // Name
+      const name = document.createElement('div');
+      name.className = 'machine-name';
+      name.textContent = room.label;
+      card.appendChild(name);
+      // Subtext: AC or Non-AC
+      const sub = document.createElement('div');
+      sub.className = 'machine-subtext';
+      sub.textContent = room.hasAC ? 'AC room' : 'Non-AC room';
+      card.appendChild(sub);
+      // Determine status based on bookings
+      let status = 'FREE';
+      let currentBooking = null;
+      state.bookings.forEach((b) => {
+        if (b.roomId === room.id && b.status === 'APPROVED' && b.startAt <= now && b.endAt > now) {
+          status = 'BOOKED';
+          currentBooking = b;
+        }
+      });
+      // Status chip
+      const chip = document.createElement('div');
+      chip.className = 'machine-status';
+      if (status === 'FREE') {
+        chip.classList.add('status-free');
+        chip.textContent = 'Free';
+      } else {
+        chip.classList.add('status-running');
+        // Show booking end time for clarity
+        const endDate = new Date(currentBooking.endAt);
+        chip.textContent = `Booked until ${endDate.toLocaleTimeString()}`;
+      }
+      card.appendChild(chip);
+      // Click handler to open booking modal
+      card.addEventListener('click', () => {
+        openRoomModal(room);
+      });
+      roomsGrid.appendChild(card);
+    });
+  }
+  window.updateRoomsView = updateRoomsView;
+  if (acFilter) {
+    acFilter.addEventListener('change', () => updateRoomsView());
+  }
+  // Initial render. A short delay ensures the layout has been parsed before inserting
+  // dynamic content, which fixes an issue where the grid would not render on first load.
+  // Defer initial render slightly longer to ensure state and DOM are ready.
+  setTimeout(() => updateRoomsView(), 50);
+}
+
+// Show a modal to create or manage a booking for the specified room.  The
+// modal includes inputs for date, start time, end time and reason.  Upon
+// submission, the booking is validated and submitted.  Bookings longer than
+// 24 hours are rejected.
+function openRoomModal(room) {
+  // Create overlay if necessary
+  let roomOverlay = document.getElementById('room-overlay');
+  if (!roomOverlay) {
+    roomOverlay = document.createElement('div');
+    roomOverlay.id = 'room-overlay';
+    roomOverlay.className = 'overlay';
+    document.body.appendChild(roomOverlay);
+  }
+  roomOverlay.innerHTML = '';
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  const title = document.createElement('h3');
+  title.textContent = room.label + (room.hasAC ? ' (AC)' : '');
+  modal.appendChild(title);
+  // Date input
+  const dateLabel = document.createElement('label');
+  dateLabel.textContent = 'Date';
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.valueAsDate = new Date();
+  const dateDiv = document.createElement('div');
+  dateDiv.className = 'form-group';
+  dateDiv.appendChild(dateLabel);
+  dateDiv.appendChild(dateInput);
+  modal.appendChild(dateDiv);
+  // Start time input
+  const startLabel = document.createElement('label');
+  startLabel.textContent = 'Start time';
+  const startInput = document.createElement('input');
+  startInput.type = 'time';
+  startInput.value = '09:00';
+  const startDiv = document.createElement('div');
+  startDiv.className = 'form-group';
+  startDiv.appendChild(startLabel);
+  startDiv.appendChild(startInput);
+  modal.appendChild(startDiv);
+  // End time input
+  const endLabel = document.createElement('label');
+  endLabel.textContent = 'End time';
+  const endInput = document.createElement('input');
+  endInput.type = 'time';
+  endInput.value = '10:00';
+  const endDiv = document.createElement('div');
+  endDiv.className = 'form-group';
+  endDiv.appendChild(endLabel);
+  endDiv.appendChild(endInput);
+  modal.appendChild(endDiv);
+  // Reason textarea
+  const reasonLabel = document.createElement('label');
+  reasonLabel.textContent = 'Reason for booking';
+  const reasonArea = document.createElement('textarea');
+  reasonArea.rows = 3;
+  reasonArea.placeholder = 'E.g., study group, LAN party, club meeting';
+  const reasonDiv = document.createElement('div');
+  reasonDiv.className = 'form-group';
+  reasonDiv.appendChild(reasonLabel);
+  reasonDiv.appendChild(reasonArea);
+  modal.appendChild(reasonDiv);
+  // Instruction note
+  const note = document.createElement('p');
+  note.style.fontSize = '0.75rem';
+  note.style.color = 'var(--text-muted)';
+  note.textContent = 'Bookings cannot exceed 24 hours and may span across days.';
+  modal.appendChild(note);
+  // Action buttons
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions-row';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn-secondary';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => roomOverlay.classList.remove('active');
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'btn-primary';
+  submitBtn.textContent = 'Submit request';
+  submitBtn.onclick = () => {
+    const dateValue = dateInput.value;
+    const startValue = startInput.value;
+    const endValue = endInput.value;
+    const reason = reasonArea.value.trim();
+    if (!dateValue || !startValue || !endValue) {
+      alert('Please select a date and times.');
+      return;
+    }
+    // Construct start and end timestamps.  If the end time is before the
+    // start time, assume it crosses midnight to the next day.
+    const startAt = new Date(`${dateValue}T${startValue}`);
+    let endAt = new Date(`${dateValue}T${endValue}`);
+    if (endAt <= startAt) {
+      // move end time to next day
+      endAt.setDate(endAt.getDate() + 1);
+    }
+    const diff = endAt - startAt;
+    if (diff <= 0) {
+      alert('End time must be after start time.');
+      return;
+    }
+    if (diff > 24 * 60 * 60 * 1000) {
+      alert('Booking duration cannot exceed 24 hours.');
+      return;
+    }
+    // Check for conflicts
+    const startTimestamp = startAt.getTime();
+    const endTimestamp = endAt.getTime();
+    if (checkConflict(room.id, startTimestamp, endTimestamp)) {
+      alert('This room is not available for the selected times.');
+      return;
+    }
+    if (!reason) {
+      alert('Please provide a reason for booking.');
+      return;
+    }
+    submitBooking(room, startTimestamp, endTimestamp, reason);
+    roomOverlay.classList.remove('active');
+  };
+  actions.appendChild(cancelBtn);
+  actions.appendChild(submitBtn);
+  modal.appendChild(actions);
+  roomOverlay.appendChild(modal);
+  roomOverlay.classList.add('active');
+  // Close on outside click
+  roomOverlay.addEventListener('click', (e) => {
+    if (e.target === roomOverlay) {
+      roomOverlay.classList.remove('active');
+    }
+  }, { once: true });
+}
+
+// Initialise the My Bookings page.  Defines a renderMyBookings() function
+// that renders both active/pending bookings and past/cancelled bookings.
+function initMyBookingsPage() {
+  window.renderMyBookings = function renderMyBookings() {
+    const activeList = document.getElementById('active-bookings');
+    const historyList = document.getElementById('booking-history');
+    if (!activeList || !historyList) return;
+    activeList.innerHTML = '';
+    historyList.innerHTML = '';
+    const now = Date.now();
+    // Define categories
+    const active = [];
+    const history = [];
+    state.bookings.forEach((b) => {
+      if (b.status === 'CANCELLED' || b.status === 'REJECTED') {
+        history.push(b);
+      } else if (b.endAt < now) {
+        history.push({ ...b, status: 'COMPLETED' });
+      } else {
+        active.push(b);
+      }
+    });
+    // Render active bookings
+    active.forEach((b) => {
+      const row = document.createElement('div');
+      row.className = 'wash-item';
+      const info = document.createElement('div');
+      info.className = 'info';
+      const startStr = new Date(b.startAt).toLocaleString();
+      const endStr = new Date(b.endAt).toLocaleString();
+      let statusLabel;
+      if (b.status === 'PENDING') statusLabel = 'Pending approval';
+      else if (b.status === 'APPROVED') statusLabel = 'Approved';
+      else statusLabel = b.status;
+      info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${startStr} → ${endStr}</span><span class="status">${statusLabel}</span>`;
+      const actions = document.createElement('div');
+      actions.className = 'wash-actions';
+      // Cancel
+      const cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = () => {
+        cancelBooking(b.id);
+        renderMyBookings();
+        if (typeof updateRoomsView === 'function') updateRoomsView();
+      };
+      actions.appendChild(cancelBtn);
+      // Extend (only for approved)
+      if (b.status === 'APPROVED') {
+        const extendBtn = document.createElement('button');
+        extendBtn.textContent = 'Extend';
+        extendBtn.onclick = () => {
+          const newEnd = prompt('Enter new end time (YYYY-MM-DD HH:MM)');
+          if (newEnd) {
+            const newEndAt = new Date(newEnd).getTime();
+            extendBooking(b.id, newEndAt);
+            renderMyBookings();
+          }
+        };
+        actions.appendChild(extendBtn);
+      }
+      // Modify (only for pending or approved)
+      if (b.status === 'PENDING' || b.status === 'APPROVED') {
+        const modifyBtn = document.createElement('button');
+        modifyBtn.textContent = 'Modify';
+        modifyBtn.onclick = () => {
+          const newStart = prompt('Enter new start time (YYYY-MM-DD HH:MM)', new Date(b.startAt).toISOString().slice(0,16).replace('T',' '));
+          const newEnd = prompt('Enter new end time (YYYY-MM-DD HH:MM)', new Date(b.endAt).toISOString().slice(0,16).replace('T',' '));
+          const newReason = prompt('Enter new reason (optional)', b.reason);
+          if (newStart && newEnd) {
+            const newStartAt = new Date(newStart).getTime();
+            const newEndAt = new Date(newEnd).getTime();
+            modifyBooking(b.id, newStartAt, newEndAt, newReason);
+            renderMyBookings();
+          }
+        };
+        actions.appendChild(modifyBtn);
+      }
+      row.appendChild(info);
+      row.appendChild(actions);
+      activeList.appendChild(row);
+    });
+    // Render history bookings
+    history.forEach((b) => {
+      const row = document.createElement('div');
+      row.className = 'wash-item';
+      const info = document.createElement('div');
+      info.className = 'info';
+      const startStr = new Date(b.startAt).toLocaleString();
+      const endStr = new Date(b.endAt).toLocaleString();
+      let statusLabel;
+      if (b.status === 'COMPLETED') statusLabel = 'Completed';
+      else statusLabel = b.status;
+      info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${startStr} → ${endStr}</span><span class="status">${statusLabel}</span>`;
+      row.appendChild(info);
+      historyList.appendChild(row);
+    });
+  };
+  // Initial render after a tick to allow DOM to settle.
+  setTimeout(() => renderMyBookings(), 0);
+}
+
+// On DOM ready we initialise state and start the tick.  Then we detect
+// which page we are on by body class and call the appropriate initialiser.
 document.addEventListener('DOMContentLoaded', () => {
-  // Determine which page we are on by body class
+  // Initialise application state and start the minute-level timer.  Do not
+  // present any debug alerts in production.  Previous debug alerts have been
+  // removed.
+  initState();
+  startTick();
   const bodyClass = document.body.classList;
   if (bodyClass.contains('laundry-page')) {
     initLaundryPage();
@@ -21,215 +818,270 @@ document.addEventListener('DOMContentLoaded', () => {
     initMyWashesPage();
   } else if (bodyClass.contains('alerts-page')) {
     initAlertsPage();
+  } else if (bodyClass.contains('rooms-page')) {
+    initRoomsPage();
+  } else if (bodyClass.contains('my-bookings-page')) {
+    initMyBookingsPage();
   } else if (bodyClass.contains('home-page')) {
-    // nothing special for home
+    // nothing special for home page
   }
 });
 
-// Data model for laundry machines (static demo)
-const hostelData = {
-  'LVH': {
-    floors: {
-      '1': [
-        { id: 'M-1', status: 'free' },
-        { id: 'M-2', status: 'running', eta: 18 },
-        { id: 'M-3', status: 'awaiting' },
-        { id: 'M-4', status: 'free' },
-        { id: 'M-5', status: 'maintenance' }
-      ],
-      '2': [
-        { id: 'M-1', status: 'running', eta: 32 },
-        { id: 'M-2', status: 'running', eta: 5 },
-        { id: 'M-3', status: 'awaiting' },
-        { id: 'M-4', status: 'running', eta: 14 },
-        { id: 'M-5', status: 'running', eta: 25 }
-      ],
-      '3': [
-        { id: 'M-1', status: 'awaiting' },
-        { id: 'M-2', status: 'awaiting' },
-        { id: 'M-3', status: 'awaiting' },
-        { id: 'M-4', status: 'awaiting' },
-        { id: 'M-5', status: 'awaiting' }
-      ],
-      '4': [
-        { id: 'M-1', status: 'free' },
-        { id: 'M-2', status: 'free' },
-        { id: 'M-3', status: 'free' },
-        { id: 'M-4', status: 'running', eta: 10 },
-        { id: 'M-5', status: 'maintenance' }
-      ]
-    }
-  }
-};
-
-// Utility to update counts for summary chips
-function computeCounts(machines) {
-  const counts = { free: 0, running: 0, awaiting: 0, maintenance: 0 };
-  machines.forEach(machine => {
-    counts[machine.status]++;
-  });
-  return counts;
-}
-
+// Initialise the laundry page.  This populates the hostel and floor
+// selectors, renders summary chips and machine cards from the persisted
+// state, and wires up event handlers for changing hostels/floors and
+// watching for free machines.  A global function updateLaundryView() is
+// defined so that the tick handler can trigger re-renders.
 function initLaundryPage() {
-  const hostelSelect = document.getElementById('hostel-select');
-  const floorSelect = document.getElementById('floor-select');
-  const machinesGrid = document.getElementById('machines-grid');
-  const summaryContainer = document.getElementById('summary-container');
-  const busyBanner = document.getElementById('busy-banner');
-  
-  // Populate hostel and floor options
-  Object.keys(hostelData).forEach(hostel => {
+  try {
+    const hostelSelect = document.getElementById('hostel-select');
+    const floorSelect = document.getElementById('floor-select');
+    const machinesGrid = document.getElementById('machines-grid');
+    const summaryContainer = document.getElementById('summary-container');
+    const busyBanner = document.getElementById('busy-banner');
+    const notifyBtn = document.getElementById('notify-button');
+
+  // Remove any leftover debug messaging from earlier development.  We no longer
+  // surface alerts on load; instead rely on proper rendering below.
+
+  // Populate hostel options (only LVH for now).  Additional hostels
+  // could be added to state.machines in the future.
+  const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
+  hostels.forEach((hostel) => {
     const opt = document.createElement('option');
     opt.value = hostel;
     opt.textContent = hostel;
     hostelSelect.appendChild(opt);
   });
-  // Set default hostel
-  hostelSelect.value = 'LVH';
-  // Populate floors for LVH
-  updateFloors();
-  
-  hostelSelect.addEventListener('change', updateFloors);
-  floorSelect.addEventListener('change', updateView);
-  
-  function updateFloors() {
+  // Default selection
+  if (!hostelSelect.value) hostelSelect.value = hostels[0];
+
+  // Populate floors based on selected hostel
+  function populateFloors() {
     const selectedHostel = hostelSelect.value;
-    const floors = Object.keys(hostelData[selectedHostel].floors);
-    // Clear existing options
+    const floors = Array.from(
+      new Set(state.machines.filter((m) => m.hostel === selectedHostel).map((m) => m.floor))
+    ).sort();
     floorSelect.innerHTML = '';
-    floors.forEach(floor => {
+    floors.forEach((floor) => {
       const opt = document.createElement('option');
-      opt.value = floor;
+      opt.value = String(floor);
       opt.textContent = `Floor ${floor}`;
       floorSelect.appendChild(opt);
     });
-    floorSelect.value = floors[0];
-    updateView();
+    if (!floorSelect.value) floorSelect.value = String(floors[0]);
   }
-  
-  function updateView() {
-    const selectedHostel = hostelSelect.value;
-    const selectedFloor = floorSelect.value;
-    const machines = hostelData[selectedHostel].floors[selectedFloor];
-    // Update summary
-    const counts = computeCounts(machines);
-    summaryContainer.innerHTML = '';
-    ['free','running','awaiting','maintenance'].forEach(status => {
-      const chip = document.createElement('div');
-      chip.className = `status-chip status-${status}`;
-      chip.textContent = `${counts[status]} ${status.charAt(0).toUpperCase()+status.slice(1)}`;
-      summaryContainer.appendChild(chip);
+    populateFloors();
+
+    hostelSelect.addEventListener('change', () => {
+      populateFloors();
+      window.updateLaundryView();
     });
-    // Show busy banner when no free machines
-    if (counts.free === 0) {
-      busyBanner.style.display = 'flex';
-    } else {
-      busyBanner.style.display = 'none';
+    floorSelect.addEventListener('change', () => window.updateLaundryView());
+
+    // Update the view with machines and summary for the selected location
+    window.updateLaundryView = function updateLaundryView() {
+    try {
+      const selectedHostel = hostelSelect.value;
+      const selectedFloor = parseInt(floorSelect.value);
+      const machines = state.machines.filter(
+        (m) => m.hostel === selectedHostel && m.floor === selectedFloor
+      );
+      // compute counts
+      const counts = { FREE: 0, RUNNING: 0, AWAITING: 0, MAINT: 0 };
+      machines.forEach((m) => {
+        counts[m.status]++;
+      });
+      // summary chips
+      summaryContainer.innerHTML = '';
+      [
+        { key: 'FREE', label: 'Free' },
+        { key: 'RUNNING', label: 'Running' },
+        { key: 'AWAITING', label: 'Awaiting' },
+        { key: 'MAINT', label: 'Maint' },
+      ].forEach(({ key, label }) => {
+        const chip = document.createElement('div');
+        chip.className = `status-chip status-${key.toLowerCase()}`;
+        chip.textContent = `${counts[key]} ${label}`;
+        summaryContainer.appendChild(chip);
+      });
+      // busy banner
+      busyBanner.style.display = counts['FREE'] === 0 ? 'flex' : 'none';
+      // render machine cards
+      machinesGrid.innerHTML = '';
+      machines.forEach((m) => {
+        const card = document.createElement('div');
+        card.className = 'machine-card';
+        card.dataset.id = m.id;
+        card.dataset.status = m.status;
+        // icon
+        const icon = document.createElement('div');
+        icon.className = 'machine-icon';
+        icon.textContent = '🧺';
+        card.appendChild(icon);
+        // name
+        const name = document.createElement('div');
+        name.className = 'machine-name';
+        name.textContent = m.label;
+        card.appendChild(name);
+        // subtext
+        const sub = document.createElement('div');
+        sub.className = 'machine-subtext';
+        sub.textContent = `Floor ${m.floor} · ${m.hostel}`;
+        card.appendChild(sub);
+        // status chip
+        const status = document.createElement('div');
+        status.className = `machine-status status-${m.status.toLowerCase()}`;
+        let labelStr;
+        if (m.status === 'FREE') labelStr = 'Free';
+        else if (m.status === 'RUNNING') labelStr = m.eta != null ? `Running · ${m.eta}m` : 'Running';
+        else if (m.status === 'AWAITING') labelStr = 'Awaiting pickup';
+        else labelStr = 'Maintenance';
+        status.textContent = labelStr;
+        card.appendChild(status);
+        // click handler opens modal
+        card.addEventListener('click', () => openMachineModal(m));
+        machinesGrid.appendChild(card);
+      });
+    } catch (err) {
+      console.error('updateLaundryView error:', err);
     }
-    // Render machines grid
-    machinesGrid.innerHTML = '';
-    machines.forEach(machine => {
-      const card = document.createElement('div');
-      card.className = 'machine-card';
-      card.dataset.id = machine.id;
-      card.dataset.status = machine.status;
-      // Icon using emoji
-      const icon = document.createElement('div');
-      icon.className = 'machine-icon';
-      icon.textContent = '🧺';
-      card.appendChild(icon);
-      // Name
-      const name = document.createElement('div');
-      name.className = 'machine-name';
-      name.textContent = machine.id;
-      card.appendChild(name);
-      // Subtext
-      const sub = document.createElement('div');
-      sub.className = 'machine-subtext';
-      sub.textContent = `Floor ${selectedFloor}`;
-      card.appendChild(sub);
-      // Status chip
-      const status = document.createElement('div');
-      status.className = `machine-status status-${machine.status}`;
-      let label = '';
-      if (machine.status === 'free') label = 'Free';
-      if (machine.status === 'running') label = `Running · ${machine.eta}m`;
-      if (machine.status === 'awaiting') label = 'Awaiting';
-      if (machine.status === 'maintenance') label = 'Maintenance';
-      status.textContent = label;
-      card.appendChild(status);
-      // Click handler to open modal
-      card.addEventListener('click', () => openMachineModal(machine, selectedFloor));
-      machinesGrid.appendChild(card);
+  };
+
+    // Initial render. Perform the update on the next tick to allow the DOM to
+    // settle. Without deferring, the view may not populate on the first load.
+    setTimeout(() => {
+      try { window.updateLaundryView(); } catch (e) { console.error(e); }
+    }, 0);
+    // Watch-free notify button
+    notifyBtn.addEventListener('click', () => {
+      const selectedHostel = hostelSelect.value;
+      const selectedFloor = parseInt(floorSelect.value);
+      if (!state.watchFree[selectedHostel]) state.watchFree[selectedHostel] = {};
+      state.watchFree[selectedHostel][selectedFloor] = true;
+      saveState();
+      // Provide immediate feedback to the user
+      notifyBtn.textContent = 'We’ll notify you';
+      notifyBtn.disabled = true;
     });
+
+    // If a machine was requested to be opened from My Washes, handle it
+    const openMachineId = localStorage.getItem('openMachineId');
+    if (openMachineId) {
+      const machine = state.machines.find((m) => m.id === openMachineId);
+      if (machine) {
+        // Delay opening slightly to allow page layout to stabilise
+        setTimeout(() => openMachineModal(machine), 100);
+      }
+      localStorage.removeItem('openMachineId');
+    }
+  } catch (err) {
+    console.error('initLaundryPage error:', err);
   }
-  
-  // Busy banner notify button
-  const notifyBtn = document.getElementById('notify-button');
-  notifyBtn.addEventListener('click', () => {
-    alert('We will notify you when a machine becomes free. (Demo only)');
-  });
 }
 
-function openMachineModal(machine, floor) {
+// Display machine details in a modal.  The modal shows the current status
+// along with context-specific actions (start wash, notify, nudge, mark
+// collected, report).  A nested report form can be opened to flag
+// maintenance issues.  When actions are taken the state is updated and
+// re-rendering occurs.
+function openMachineModal(machine) {
   const overlay = document.getElementById('overlay');
   const modalTitle = document.getElementById('modal-title');
   const modalStatus = document.getElementById('modal-status');
   const modalActions = document.getElementById('modal-actions');
-  modalTitle.textContent = machine.id;
-  // Set status text and actions based on machine status
-  let statusText = '';
+  modalTitle.textContent = machine.label;
   modalActions.innerHTML = '';
-  if (machine.status === 'free') {
+  let statusText = '';
+  if (machine.status === 'FREE') {
     statusText = 'This machine is free to use.';
-    const startBtn = document.createElement('button');
-    startBtn.className = 'btn-primary';
-    startBtn.textContent = 'Start Wash';
-    startBtn.onclick = () => {
-      alert('Wash started (demo).');
-      overlay.classList.remove('active');
-    };
+    // Duration input
+    const durationLabel = document.createElement('label');
+    durationLabel.className = 'duration-label';
+    durationLabel.textContent = 'Duration (min)';
+    const durationInput = document.createElement('input');
+    durationInput.type = 'number';
+    durationInput.min = '10';
+    durationInput.max = '90';
+    durationInput.value = '35';
+    durationInput.className = 'duration-input';
+    const durationWrapper = document.createElement('div');
+    durationWrapper.className = 'duration-wrapper';
+    durationWrapper.appendChild(durationLabel);
+    durationWrapper.appendChild(durationInput);
+    modalActions.appendChild(durationWrapper);
+    // Actions row
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'modal-actions-row';
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'btn-secondary';
     cancelBtn.textContent = 'Cancel';
     cancelBtn.onclick = () => overlay.classList.remove('active');
-    modalActions.appendChild(cancelBtn);
-    modalActions.appendChild(startBtn);
-  } else if (machine.status === 'running') {
-    statusText = `Currently running. ${machine.eta} minutes remaining.`;
+    const startBtn = document.createElement('button');
+    startBtn.className = 'btn-primary';
+    startBtn.textContent = 'Start Wash';
+      startBtn.onclick = () => {
+      const minutes = parseInt(durationInput.value || '35');
+      startWash(machine, minutes);
+      overlay.classList.remove('active');
+      updateLaundryView();
+      // Only attempt to render My Washes if the function exists.
+      if (typeof renderMyWashes === 'function') {
+        renderMyWashes();
+      }
+    };
+    actionsRow.appendChild(cancelBtn);
+    actionsRow.appendChild(startBtn);
+    modalActions.appendChild(actionsRow);
+  } else if (machine.status === 'RUNNING') {
+    statusText = machine.eta != null
+      ? `Currently running. ${machine.eta} minutes remaining.`
+      : 'Currently running.';
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'modal-actions-row';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'btn-secondary';
+    closeBtn.textContent = 'Close';
+    closeBtn.onclick = () => overlay.classList.remove('active');
     const notifyBtn = document.createElement('button');
     notifyBtn.className = 'btn-primary';
     notifyBtn.textContent = 'Notify When Done';
     notifyBtn.onclick = () => {
-      alert('You will be notified when the cycle finishes. (Demo)');
+      pushNotice(`You will be notified when ${machine.label} finishes.`, 'info');
       overlay.classList.remove('active');
     };
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'btn-secondary';
-    cancelBtn.textContent = 'Close';
-    cancelBtn.onclick = () => overlay.classList.remove('active');
-    modalActions.appendChild(cancelBtn);
-    modalActions.appendChild(notifyBtn);
-  } else if (machine.status === 'awaiting') {
-    statusText = 'Cycle has completed. Clothes are awaiting pickup.';
+    actionsRow.appendChild(closeBtn);
+    actionsRow.appendChild(notifyBtn);
+    modalActions.appendChild(actionsRow);
+  } else if (machine.status === 'AWAITING') {
+    const minsAgo = machine.lastCompletedAt
+      ? Math.round((Date.now() - machine.lastCompletedAt) / 60000)
+      : 0;
+    statusText = `Cycle complete ${minsAgo} min ago. Clothes are awaiting pickup.`;
+    const actionsRow = document.createElement('div');
+    actionsRow.className = 'modal-actions-row';
     const nudgeBtn = document.createElement('button');
     nudgeBtn.className = 'btn-primary';
-    nudgeBtn.textContent = 'Nudge User';
+    nudgeBtn.textContent = 'Nudge user';
     nudgeBtn.onclick = () => {
-      alert('Nudge sent to user. (Demo)');
+      nudgeUser(machine);
       overlay.classList.remove('active');
     };
-    const takeBtn = document.createElement('button');
-    takeBtn.className = 'btn-secondary';
-    takeBtn.textContent = 'Mark Collected';
-    takeBtn.onclick = () => {
-      alert('Marked as collected. (Demo)');
+    const collectBtn = document.createElement('button');
+    collectBtn.className = 'btn-secondary';
+    collectBtn.textContent = 'Mark collected';
+    collectBtn.onclick = () => {
+      markCollected(machine);
       overlay.classList.remove('active');
+      updateLaundryView();
+      if (typeof renderMyWashes === 'function') {
+        renderMyWashes();
+      }
     };
-    modalActions.appendChild(takeBtn);
-    modalActions.appendChild(nudgeBtn);
-  } else if (machine.status === 'maintenance') {
+    actionsRow.appendChild(collectBtn);
+    actionsRow.appendChild(nudgeBtn);
+    modalActions.appendChild(actionsRow);
+  } else if (machine.status === 'MAINT') {
     statusText = 'This machine is under maintenance.';
     const okBtn = document.createElement('button');
     okBtn.className = 'btn-primary';
@@ -237,74 +1089,237 @@ function openMachineModal(machine, floor) {
     okBtn.onclick = () => overlay.classList.remove('active');
     modalActions.appendChild(okBtn);
   }
+  // Report button (available for all statuses)
+  const reportBtn = document.createElement('button');
+  reportBtn.className = 'btn-secondary report-btn';
+  reportBtn.textContent = 'Report / Flag';
+  reportBtn.onclick = () => {
+    // open report form
+    openReportForm(machine);
+  };
+  modalActions.appendChild(reportBtn);
+  // Status text
   modalStatus.textContent = statusText;
   overlay.classList.add('active');
-  // Close overlay when clicking outside modal
-  overlay.addEventListener('click', e => {
+  // Close overlay when clicking outside modal (but not inside nested modals)
+  overlay.addEventListener('click', (e) => {
     if (e.target === overlay) {
       overlay.classList.remove('active');
     }
-  });
+  }, { once: true });
 }
 
-function initMyWashesPage() {
-  const activeList = document.getElementById('active-washes');
-  const historyList = document.getElementById('wash-history');
-  // Sample data
-  const active = [
-    { id: 'M-2', floor: '2', eta: 12 }
-  ];
-  const history = [
-    { id: 'M-1', floor: '1', completed: 'Oct 28, 2025 14:35' },
-    { id: 'M-5', floor: '4', completed: 'Oct 25, 2025 10:12' }
-  ];
-  // Render active
-  active.forEach(item => {
-    const row = document.createElement('div');
-    row.className = 'wash-item';
-    const info = document.createElement('div');
-    info.className = 'info';
-    info.innerHTML = `<strong>${item.id}</strong><span class="status">Running · ${item.eta}m remaining</span>`;
-    const btn = document.createElement('button');
-    btn.textContent = 'View';
-    btn.onclick = () => {
-      // Navigate to laundry page and show modal
-      window.location.href = 'laundry.html';
+// Open a report form modal for the given machine.  Users can select a reason,
+// optionally add notes and a photo, and choose whether to mark the machine as
+// maintenance if the issue seems severe.  Upon submission the report is
+// recorded and the machine status may be updated.
+function openReportForm(machine) {
+  // Create overlay if not already present
+  let reportOverlay = document.getElementById('report-overlay');
+  if (!reportOverlay) {
+    reportOverlay = document.createElement('div');
+    reportOverlay.id = 'report-overlay';
+    reportOverlay.className = 'overlay';
+    document.body.appendChild(reportOverlay);
+  }
+  reportOverlay.innerHTML = '';
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  const title = document.createElement('h3');
+  title.textContent = `Report ${machine.label}`;
+  modal.appendChild(title);
+  // Reason select
+  const reasonLabel = document.createElement('label');
+  reasonLabel.textContent = 'Reason';
+  const reasonSelect = document.createElement('select');
+  ['Not working', 'Needs cleanup', 'Leaking water', 'Other'].forEach((opt) => {
+    const o = document.createElement('option');
+    o.value = opt;
+    o.textContent = opt;
+    reasonSelect.appendChild(o);
+  });
+  const reasonDiv = document.createElement('div');
+  reasonDiv.className = 'form-group';
+  reasonDiv.appendChild(reasonLabel);
+  reasonDiv.appendChild(reasonSelect);
+  modal.appendChild(reasonDiv);
+  // Notes textarea
+  const notesLabel = document.createElement('label');
+  notesLabel.textContent = 'Notes (optional)';
+  const notesArea = document.createElement('textarea');
+  notesArea.rows = 3;
+  const notesDiv = document.createElement('div');
+  notesDiv.className = 'form-group';
+  notesDiv.appendChild(notesLabel);
+  notesDiv.appendChild(notesArea);
+  modal.appendChild(notesDiv);
+  // Photo input
+  const photoLabel = document.createElement('label');
+  photoLabel.textContent = 'Photo (optional)';
+  const photoInput = document.createElement('input');
+  photoInput.type = 'file';
+  photoInput.accept = 'image/*';
+  const photoDiv = document.createElement('div');
+  photoDiv.className = 'form-group';
+  photoDiv.appendChild(photoLabel);
+  photoDiv.appendChild(photoInput);
+  modal.appendChild(photoDiv);
+  let photoData = undefined;
+  photoInput.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      photoData = reader.result;
     };
-    row.appendChild(info);
-    row.appendChild(btn);
-    activeList.appendChild(row);
+    reader.readAsDataURL(file);
   });
-  // Render history
-  history.forEach(item => {
-    const row = document.createElement('div');
-    row.className = 'wash-item';
-    const info = document.createElement('div');
-    info.className = 'info';
-    info.innerHTML = `<strong>${item.id}</strong><span class="status">Completed on ${item.completed}</span>`;
-    row.appendChild(info);
-    historyList.appendChild(row);
-  });
+  // Affect maintenance checkbox
+  const affectDiv = document.createElement('div');
+  affectDiv.className = 'form-group horizontal';
+  const affectInput = document.createElement('input');
+  affectInput.type = 'checkbox';
+  affectInput.id = 'affect';
+  affectInput.checked = true;
+  const affectLabel = document.createElement('label');
+  affectLabel.htmlFor = 'affect';
+  affectLabel.textContent = 'Mark machine as maintenance if issue is severe';
+  affectDiv.appendChild(affectInput);
+  affectDiv.appendChild(affectLabel);
+  modal.appendChild(affectDiv);
+  // Action buttons
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions-row';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn-secondary';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => {
+    reportOverlay.classList.remove('active');
+  };
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'btn-primary';
+  submitBtn.textContent = 'Submit';
+  submitBtn.onclick = () => {
+    const reason = reasonSelect.value;
+    const notes = notesArea.value;
+    const severe = reason === 'Not working' || reason === 'Leaking water';
+    const affect = affectInput.checked && severe;
+    submitReport(machine.id, reason, notes, photoData, affect);
+    reportOverlay.classList.remove('active');
+    // Re-render to reflect maintenance status if changed
+    updateLaundryView();
+  };
+  actions.appendChild(cancelBtn);
+  actions.appendChild(submitBtn);
+  modal.appendChild(actions);
+  reportOverlay.appendChild(modal);
+  reportOverlay.classList.add('active');
+  // close on outside click
+  reportOverlay.addEventListener('click', (e) => {
+    if (e.target === reportOverlay) {
+      reportOverlay.classList.remove('active');
+    }
+  }, { once: true });
 }
 
+// Initialise the My Washes page.  Delegates rendering to renderMyWashes(),
+// which will be called every minute by the tick handler to keep the list
+// current.  Provide a global renderMyWashes() so other parts of the code
+// (tick or actions) can refresh this view on demand.
+function initMyWashesPage() {
+  window.renderMyWashes = function renderMyWashes() {
+    const activeList = document.getElementById('active-washes');
+    const historyList = document.getElementById('wash-history');
+    if (!activeList || !historyList) return;
+    activeList.innerHTML = '';
+    historyList.innerHTML = '';
+    const active = state.washes.filter((w) => w.status === 'RUNNING' || w.status === 'AWAITING');
+    const history = state.washes.filter((w) => w.status === 'COLLECTED');
+    // render active
+    active.forEach((w) => {
+      const row = document.createElement('div');
+      row.className = 'wash-item';
+      const info = document.createElement('div');
+      info.className = 'info';
+      // find machine for eta and location
+      const machine = state.machines.find((m) => m.id === w.machineId);
+      let statusLabel;
+      if (w.status === 'RUNNING') {
+        statusLabel = machine?.eta != null ? `Running · ${machine.eta}m remaining` : 'Running';
+      } else {
+        statusLabel = 'Finished · waiting pickup';
+      }
+      info.innerHTML = `<strong>${w.machineLabel}</strong><span class="status">${statusLabel}</span>`;
+      const btnGroup = document.createElement('div');
+      btnGroup.className = 'wash-actions';
+      // View button
+      const viewBtn = document.createElement('button');
+      viewBtn.textContent = 'View';
+      viewBtn.onclick = () => {
+        localStorage.setItem('openMachineId', w.machineId);
+        window.location.href = 'laundry.html';
+      };
+      btnGroup.appendChild(viewBtn);
+      // Collect button if awaiting
+      if (w.status === 'AWAITING') {
+        const collectBtn = document.createElement('button');
+        collectBtn.textContent = 'Collected';
+        collectBtn.onclick = () => {
+          const machineToCollect = state.machines.find((m) => m.id === w.machineId);
+          if (machineToCollect) {
+            markCollected(machineToCollect);
+            renderMyWashes();
+            updateLaundryView();
+          }
+        };
+        btnGroup.appendChild(collectBtn);
+      }
+      row.appendChild(info);
+      row.appendChild(btnGroup);
+      activeList.appendChild(row);
+    });
+    // render history
+    history.forEach((w) => {
+      const row = document.createElement('div');
+      row.className = 'wash-item';
+      const info = document.createElement('div');
+      info.className = 'info';
+      const start = new Date(w.startAt).toLocaleString();
+      const end = w.endAt ? new Date(w.endAt).toLocaleString() : '';
+      info.innerHTML = `<strong>${w.machineLabel}</strong><span class="status">${start} → ${end}</span>`;
+      row.appendChild(info);
+      historyList.appendChild(row);
+    });
+  };
+  renderMyWashes();
+}
+
+// Initialise the alerts page.  Defines a renderAlerts() function which
+// populates the notifications list from state.notices.  Called on page
+// load and subsequently every minute by the tick handler.
 function initAlertsPage() {
-  const list = document.getElementById('alerts-list');
-  // Sample notifications
-  const alerts = [
-    { message: 'Your wash on M-2 is complete. Please collect your clothes.', icon: '🔔' },
-    { message: 'Machine M-3 is now free on Floor 2.', icon: '🧺' },
-    { message: 'Maintenance scheduled for M-5 tomorrow.', icon: '⚠️' }
-  ];
-  alerts.forEach(alert => {
-    const item = document.createElement('div');
-    item.className = 'alert-item';
-    const icon = document.createElement('div');
-    icon.className = 'icon';
-    icon.textContent = alert.icon;
-    const text = document.createElement('div');
-    text.textContent = alert.message;
-    item.appendChild(icon);
-    item.appendChild(text);
-    list.appendChild(item);
-  });
+  window.renderAlerts = function renderAlerts() {
+    const list = document.getElementById('alerts-list');
+    if (!list) return;
+    list.innerHTML = '';
+    state.notices.forEach((n) => {
+      const item = document.createElement('div');
+      item.className = 'alert-item';
+      const iconDiv = document.createElement('div');
+      iconDiv.className = 'icon';
+      // choose an emoji based on kind
+      let emoji = '🔔';
+      if (n.kind === 'success') emoji = '✅';
+      else if (n.kind === 'info') emoji = 'ℹ️';
+      else if (n.kind === 'warning') emoji = '⚠️';
+      else if (n.kind === 'report') emoji = '📝';
+      iconDiv.textContent = emoji;
+      const textDiv = document.createElement('div');
+      textDiv.innerHTML = `<strong>${n.title}</strong><br/><span class="time">${n.time}</span>`;
+      item.appendChild(iconDiv);
+      item.appendChild(textDiv);
+      list.appendChild(item);
+    });
+  };
+  renderAlerts();
 }

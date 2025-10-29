@@ -1,5 +1,8 @@
 // Simple service worker for HostelSync PWA.
-const CACHE_NAME = 'hostelsync-cache-v1';
+// Bump the cache name to force the service worker to fetch updated assets.
+// Bump the cache name each time we release a new version so the service
+// worker fetches the latest assets instead of serving old files from cache.
+const CACHE_NAME = 'hostelsync-cache-v4';
 const URLS_TO_CACHE = [
   '/',
   '/index.html',

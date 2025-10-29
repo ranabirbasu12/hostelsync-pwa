@@ -197,6 +197,11 @@ main {
   background-color: var(--error-color);
 }
 
+/* Support the shorthand 'maint' suffix used in script.js for MAINT status */
+.status-maint {
+  background-color: var(--error-color);
+}
+
 /* Machines grid */
 .machines-grid {
   display: grid;
@@ -288,6 +293,65 @@ main {
   border-radius: var(--border-radius);
   font-size: 0.875rem;
   cursor: pointer;
+}
+
+/* Additional modal layouts for dynamic interactions */
+.duration-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.duration-input {
+  padding: 0.5rem;
+  border: 1px solid #d0d7e5;
+  border-radius: var(--border-radius);
+  font-size: 0.875rem;
+}
+
+.modal-actions-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.wash-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.form-group.horizontal {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Overlay for report modal (shares styles with general overlay) */
+#report-overlay.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  backdrop-filter: blur(4px);
+  background-color: rgba(0, 0, 0, 0.4);
+  display: none;
+  justify-content: center;
+  align-items: center;
+  z-index: 101;
+}
+
+#report-overlay.overlay.active {
+  display: flex;
 }
 
 .btn-primary {
