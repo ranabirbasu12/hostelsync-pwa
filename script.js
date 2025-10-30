@@ -146,6 +146,7 @@ function initState() {
       // CANCELLED.
       rooms: makeRooms(),
       bookings: [],
+      user: null,
     };
     // Initialise watchFree flags for all hostels and floors present in machines.
     const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
@@ -190,8 +191,22 @@ function pushNotice(title, kind) {
 // status is switched to RUNNING, an ETA is set, and a new wash record is
 // inserted into the wash history.  A notification is emitted.
 function startWash(machine, minutes) {
+  // When starting a wash mark the machine as running and reset any
+  // community nudge/flag counters.  These counters are used in the
+  // game‑theory enforcement system to encourage timely pickup.
   state.machines = state.machines.map((m) =>
-    m.id === machine.id ? { ...m, status: 'RUNNING', eta: minutes } : m
+    m.id === machine.id
+      ? {
+          ...m,
+          status: 'RUNNING',
+          eta: minutes,
+          // reset nudge and flag counters whenever a new cycle starts
+          nudgeCount: 0,
+          flagCount: 0,
+          // record which user started the wash for nudging purposes
+          ownerId: state.user ? state.user.id : null,
+        }
+      : m
   );
   state.washes.unshift({
     id: `w-${Date.now()}`,
@@ -228,6 +243,48 @@ function markCollected(machine) {
 // occur but a notice is generated.
 function nudgeUser(machine) {
   pushNotice(`A gentle nudge was sent for ${machine.label}.`, 'info');
+}
+
+// Community nudge system.  Increases a per‑machine counter each time
+// someone nudges the owner to collect their clothes.  After several
+// nudges a stronger warning is shown.  Counters reset when a new cycle
+// starts.
+function nudgeMachine(machine) {
+  // initialise counters if missing
+  if (machine.nudgeCount == null) machine.nudgeCount = 0;
+  machine.nudgeCount++;
+  if (machine.nudgeCount >= 3) {
+    pushNotice(`Multiple nudges sent for ${machine.label}. Please collect your clothes.`, 'warning');
+    // After multiple nudges, send a reminder to the owner via email/WhatsApp if possible
+    sendReminderEmail(machine);
+  } else {
+    pushNotice(`A nudge was sent for ${machine.label}.`, 'info');
+  }
+  saveState();
+  // re-render laundry view if present
+  if (typeof updateLaundryView === 'function') updateLaundryView();
+}
+
+// Community flag system.  If two different users flag that clothes are
+// still in the machine, the cycle is considered abandoned.  The
+// machine returns to the AWAITING state and counters reset.  This
+// provides a game‑theory mechanism to discourage users from marking a
+// machine as collected when clothes remain.
+function flagMachine(machine) {
+  if (machine.flagCount == null) machine.flagCount = 0;
+  machine.flagCount++;
+  if (machine.flagCount >= 2) {
+    // reset counters and return to awaiting
+    machine.flagCount = 0;
+    machine.nudgeCount = 0;
+    machine.status = 'AWAITING';
+    machine.lastCompletedAt = Date.now();
+    pushNotice(`${machine.label} flagged as still occupied. Please collect your clothes.`, 'report');
+  } else {
+    pushNotice(`Flag recorded for ${machine.label}. One more flag will apply a penalty.`, 'info');
+  }
+  saveState();
+  if (typeof updateLaundryView === 'function') updateLaundryView();
 }
 
 // Submit a report for a machine.  The entry is stored in the reports array.
@@ -822,6 +879,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initRoomsPage();
   } else if (bodyClass.contains('my-bookings-page')) {
     initMyBookingsPage();
+  } else if (bodyClass.contains('profile-page')) {
+    initProfilePage();
   } else if (bodyClass.contains('home-page')) {
     // nothing special for home page
   }
@@ -1060,13 +1119,27 @@ function openMachineModal(machine) {
     statusText = `Cycle complete ${minsAgo} min ago. Clothes are awaiting pickup.`;
     const actionsRow = document.createElement('div');
     actionsRow.className = 'modal-actions-row';
+    // Create nudge button: sends a reminder to the owner using the
+    // nudgeMachine() helper defined at the bottom of this file.  After
+    // three nudges a stronger warning is displayed.
     const nudgeBtn = document.createElement('button');
     nudgeBtn.className = 'btn-primary';
-    nudgeBtn.textContent = 'Nudge user';
+    nudgeBtn.textContent = 'Nudge owner';
     nudgeBtn.onclick = () => {
-      nudgeUser(machine);
+      nudgeMachine(machine);
       overlay.classList.remove('active');
     };
+    // Create flag button: indicates that clothes are still in the
+    // machine.  Two flags will revert the cycle back to AWAITING and
+    // notify the owner.
+    const flagBtn = document.createElement('button');
+    flagBtn.className = 'btn-secondary';
+    flagBtn.textContent = 'Flag clothes';
+    flagBtn.onclick = () => {
+      flagMachine(machine);
+      overlay.classList.remove('active');
+    };
+    // Collect button: used by the owner to mark the machine as free.
     const collectBtn = document.createElement('button');
     collectBtn.className = 'btn-secondary';
     collectBtn.textContent = 'Mark collected';
@@ -1078,8 +1151,10 @@ function openMachineModal(machine) {
         renderMyWashes();
       }
     };
-    actionsRow.appendChild(collectBtn);
+    // Append buttons in intuitive order: nudge, flag, collect.
     actionsRow.appendChild(nudgeBtn);
+    actionsRow.appendChild(flagBtn);
+    actionsRow.appendChild(collectBtn);
     modalActions.appendChild(actionsRow);
   } else if (machine.status === 'MAINT') {
     statusText = 'This machine is under maintenance.';
@@ -1322,4 +1397,140 @@ function initAlertsPage() {
     });
   };
   renderAlerts();
+}
+
+// Initialise the profile page.  If a user is logged in (state.user), show
+// their details and allow updating contact info or logging out.  If no
+// user is logged in, display a simple login form that collects an email
+// address (Google) and optional phone/WhatsApp number.  After login the
+// user is stored in state.user and the app redirects to the home page.
+function initProfilePage() {
+  const container = document.getElementById('profile-container');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!state.user) {
+    // Not logged in: show login form
+    const form = document.createElement('form');
+    form.className = 'profile-form';
+    const heading = document.createElement('h2');
+    heading.textContent = 'Sign in with Google';
+    form.appendChild(heading);
+    const emailLabel = document.createElement('label');
+    emailLabel.textContent = 'Academic email (Google)';
+    emailLabel.setAttribute('for', 'login-email');
+    form.appendChild(emailLabel);
+    const emailInput = document.createElement('input');
+    emailInput.type = 'email';
+    emailInput.id = 'login-email';
+    emailInput.required = true;
+    emailInput.placeholder = 'you@iimcal.ac.in';
+    form.appendChild(emailInput);
+    const phoneLabel = document.createElement('label');
+    phoneLabel.textContent = 'Phone / WhatsApp (optional)';
+    phoneLabel.setAttribute('for', 'login-phone');
+    form.appendChild(phoneLabel);
+    const phoneInput = document.createElement('input');
+    phoneInput.type = 'text';
+    phoneInput.id = 'login-phone';
+    phoneInput.placeholder = '+91 9876543210';
+    form.appendChild(phoneInput);
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.textContent = 'Sign in';
+    form.appendChild(submitBtn);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const email = emailInput.value.trim();
+      if (!email) return;
+      const phone = phoneInput.value.trim();
+      loginUser(email, phone);
+    });
+    container.appendChild(form);
+  } else {
+    // Logged in: show profile and update form
+    const infoSection = document.createElement('div');
+    infoSection.className = 'profile-info';
+    const heading = document.createElement('h2');
+    heading.textContent = 'Your Profile';
+    infoSection.appendChild(heading);
+    const emailP = document.createElement('p');
+    emailP.innerHTML = `<strong>Email:</strong> ${state.user.email}`;
+    infoSection.appendChild(emailP);
+    const phoneForm = document.createElement('form');
+    phoneForm.className = 'profile-form';
+    const phoneLabel = document.createElement('label');
+    phoneLabel.textContent = 'Phone / WhatsApp';
+    phoneLabel.setAttribute('for', 'profile-phone');
+    phoneForm.appendChild(phoneLabel);
+    const phoneInput = document.createElement('input');
+    phoneInput.type = 'text';
+    phoneInput.id = 'profile-phone';
+    phoneInput.value = state.user.phone || '';
+    phoneInput.placeholder = '+91 9876543210';
+    phoneForm.appendChild(phoneInput);
+    const updateBtn = document.createElement('button');
+    updateBtn.type = 'submit';
+    updateBtn.textContent = 'Update contact';
+    phoneForm.appendChild(updateBtn);
+    phoneForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      updateUserContact(phoneInput.value);
+    });
+    const logoutBtn = document.createElement('button');
+    logoutBtn.type = 'button';
+    logoutBtn.textContent = 'Log out';
+    logoutBtn.addEventListener('click', () => {
+      logoutUser();
+    });
+    container.appendChild(infoSection);
+    container.appendChild(phoneForm);
+    container.appendChild(logoutBtn);
+  }
+}
+
+// Login a user and persist to state.  Generates a simple id and records
+// email and phone number.  Users are always students in this version.  A
+// real implementation would integrate Google sign‑in here.
+function loginUser(email, phone) {
+  state.user = {
+    id: 'u-' + Date.now(),
+    role: 'student',
+    email: email.trim(),
+    phone: phone.trim() || null,
+  };
+  saveState();
+  pushNotice('Logged in as ' + state.user.email, 'info');
+  // Redirect back to home or previous page
+  window.location.href = 'index.html';
+}
+
+// Update the logged in user's contact number and save.
+function updateUserContact(phone) {
+  if (!state.user) return;
+  state.user.phone = phone.trim() || null;
+  saveState();
+  pushNotice('Profile updated', 'success');
+}
+
+// Log out the current user, clear profile and redirect to home page.
+function logoutUser() {
+  state.user = null;
+  saveState();
+  pushNotice('Logged out', 'info');
+  window.location.href = 'index.html';
+}
+
+// Simulate sending a reminder notification (email/WhatsApp) to the owner
+// of a machine after repeated nudges.  In a real system this would
+// integrate with email or messaging APIs.  Here we simply record a
+// notice when a machine has an owner and at least one contact method.
+function sendReminderEmail(machine) {
+  if (!machine.ownerId) return;
+  // Find the owner in state.  In this prototype there is only one
+  // logged in user, so we send to state.user if ids match.
+  const owner = state.user && state.user.id === machine.ownerId ? state.user : null;
+  if (!owner) return;
+  const contact = owner.phone || owner.email;
+  if (!contact) return;
+  pushNotice(`Reminder sent to ${contact} to collect clothes from ${machine.label}.`, 'info');
 }

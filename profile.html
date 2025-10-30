@@ -3,20 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Bookings · HostelSync</title>
-    <link rel="manifest" href="manifest.json" />
+    <title>Profile – HostelSync</title>
     <link rel="stylesheet" href="styles.css" />
     <script defer src="script.js"></script>
   </head>
-  <body class="my-bookings-page">
+  <body class="profile-page">
     <header>
-      <h1>My Bookings</h1>
+      <h1>My Profile</h1>
     </header>
-    <main>
-      <h2>Active & Pending</h2>
-      <div id="active-bookings" class="wash-list"></div>
-      <h2>History</h2>
-      <div id="booking-history" class="wash-list"></div>
+    <main id="profile-container">
+      <!-- Content will be rendered by script.js depending on login state -->
     </main>
     <nav class="bottom-nav">
       <a href="index.html">
@@ -39,7 +35,7 @@
         <span class="icon">🔔</span>
         Alerts
       </a>
-      <a href="profile.html">
+      <a href="profile.html" class="active">
         <span class="icon">👤</span>
         Profile
       </a>
