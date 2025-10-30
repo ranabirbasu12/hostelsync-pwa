@@ -447,3 +447,104 @@ main {
   font-size: 0.75rem;
   cursor: pointer;
 }
+
+/* Profile page styling */
+.profile-info {
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  padding: 1rem;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.profile-info .avatar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.profile-info .avatar .google-icon {
+  font-size: 2rem;
+  color: var(--accent-color);
+  font-weight: bold;
+}
+
+.profile-info .avatar .user-icon {
+  font-size: 2rem;
+}
+
+.profile-info p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.profile-form {
+  background-color: var(--surface-color);
+  padding: 1rem;
+  border-radius: var(--border-radius);
+  box-shadow: var(--card-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.profile-form input {
+  padding: 0.5rem;
+  font-size: 0.875rem;
+  border-radius: var(--border-radius);
+  border: 1px solid #d0d7e5;
+}
+
+.profile-form button {
+  padding: 0.5rem;
+  border: none;
+  border-radius: var(--border-radius);
+  background-color: var(--primary-color);
+  color: white;
+  cursor: pointer;
+}
+
+.profile-form button[type="button"] {
+  background-color: var(--error-color);
+  margin-top: 0.5rem;
+}
+
+.profile-section {
+  margin-top: 1rem;
+}
+
+.profile-section h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Additional styling for mode sub-header and admin login toggle            */
+/* These styles support the "Student Mode" subtext below headers and       */
+/* the admin login link on the profile page.                               */
+
+/* Sub-header text for page mode indicator under the page title */
+header .sub-text {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-top: -0.25rem;
+}
+
+/* Style for the admin login toggle and back link on profile page */
+.admin-link {
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  color: #64748b;
+}
+.admin-link a {
+  color: #3b82f6;
+  text-decoration: underline;
+  cursor: pointer;
+}

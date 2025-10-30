@@ -1453,7 +1453,64 @@ function initProfilePage() {
       const phone = phoneInput.value.trim();
       loginUser(email, phone);
     });
+    // Append the student login form to the container
     container.appendChild(form);
+    // Create an admin login toggle below the form
+    const adminPara = document.createElement('p');
+    adminPara.className = 'admin-link';
+    adminPara.innerHTML = 'For admin login, <a href="#">click here</a>';
+    container.appendChild(adminPara);
+    // Render the admin login form when the link is clicked
+    adminPara.querySelector('a').addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      renderAdminForm();
+    });
+    // Helper to render the admin login form
+    function renderAdminForm() {
+      container.innerHTML = '';
+      const aForm = document.createElement('form');
+      aForm.className = 'profile-form';
+      const h = document.createElement('h2');
+      h.textContent = 'Admin login';
+      aForm.appendChild(h);
+      // Admin email field
+      const aEmailLabel = document.createElement('label');
+      aEmailLabel.textContent = 'Admin email';
+      aForm.appendChild(aEmailLabel);
+      const aEmailInput = document.createElement('input');
+      aEmailInput.type = 'email';
+      aEmailInput.placeholder = 'admin@example.com';
+      aForm.appendChild(aEmailInput);
+      // Admin password field
+      const aPassLabel = document.createElement('label');
+      aPassLabel.textContent = 'Password';
+      aForm.appendChild(aPassLabel);
+      const aPassInput = document.createElement('input');
+      aPassInput.type = 'password';
+      aForm.appendChild(aPassInput);
+      // Submit button for admin login
+      const aSubmit = document.createElement('button');
+      aSubmit.type = 'submit';
+      aSubmit.textContent = 'Log in';
+      aForm.appendChild(aSubmit);
+      // Back link to student login
+      const backP = document.createElement('p');
+      backP.className = 'admin-link';
+      backP.innerHTML = '<a href="#">Back to student login</a>';
+      aForm.appendChild(backP);
+      // On admin form submit, simply show a notice (no real auth)
+      aForm.addEventListener('submit', (evt) => {
+        evt.preventDefault();
+        pushNotice('Admin login is not implemented in this demo.', 'warning');
+      });
+      // On back link click, re-render student login page
+      backP.querySelector('a').addEventListener('click', (evt2) => {
+        evt2.preventDefault();
+        initProfilePage();
+      });
+      container.appendChild(aForm);
+    }
   } else {
     // Logged in: show profile and update form
     const infoSection = document.createElement('div');
