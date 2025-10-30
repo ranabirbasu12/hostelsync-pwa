@@ -12,6 +12,14 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// Global error handler disabled.  Enable manually for debugging if needed.
+// window.onerror = function(message, source, lineno, colno, error) {
+//   if (!window.__errorShown) {
+//     window.__errorShown = true;
+//     alert('Script error: ' + message + ' at ' + lineno + ':' + colno);
+//   }
+// };
+
 // -----------------------------------------------------------------------------
 // HostelSync State Management and Helpers
 //
@@ -1450,12 +1458,32 @@ function initProfilePage() {
     // Logged in: show profile and update form
     const infoSection = document.createElement('div');
     infoSection.className = 'profile-info';
+    // Heading
     const heading = document.createElement('h2');
     heading.textContent = 'Your Profile';
     infoSection.appendChild(heading);
+    // Avatar with Google and user icons
+    const avatarDiv = document.createElement('div');
+    avatarDiv.className = 'avatar';
+    avatarDiv.innerHTML = `<span class="google-icon">G</span><span class="user-icon">👤</span>`;
+    infoSection.appendChild(avatarDiv);
+    // Name field (fall back to email local part)
+    const nameVal = state.user.name || (state.user.email ? state.user.email.split('@')[0] : '');
+    const nameP = document.createElement('p');
+    nameP.innerHTML = `<strong>Name:</strong> ${nameVal}`;
+    infoSection.appendChild(nameP);
+    // Email field
     const emailP = document.createElement('p');
     emailP.innerHTML = `<strong>Email:</strong> ${state.user.email}`;
     infoSection.appendChild(emailP);
+    // Hostel and room fields (use defaults if not set)
+    const hostelP = document.createElement('p');
+    hostelP.innerHTML = `<strong>Hostel:</strong> ${state.user.hostel || 'LVH'}`;
+    infoSection.appendChild(hostelP);
+    const roomP = document.createElement('p');
+    roomP.innerHTML = `<strong>Room:</strong> ${state.user.room || ''}`;
+    infoSection.appendChild(roomP);
+    // Contact update form
     const phoneForm = document.createElement('form');
     phoneForm.className = 'profile-form';
     const phoneLabel = document.createElement('label');
@@ -1485,6 +1513,21 @@ function initProfilePage() {
     container.appendChild(infoSection);
     container.appendChild(phoneForm);
     container.appendChild(logoutBtn);
+    // Add My Washes and My Bookings sections within profile
+    const washesSection = document.createElement('div');
+    washesSection.className = 'profile-section';
+    washesSection.innerHTML = `<h3>My Washes</h3><div id="active-washes" class="wash-list"></div><div id="wash-history" class="wash-list"></div>`;
+    container.appendChild(washesSection);
+    const bookingsSection = document.createElement('div');
+    bookingsSection.className = 'profile-section';
+    bookingsSection.innerHTML = `<h3>My Bookings</h3><div id="active-bookings" class="wash-list"></div><div id="booking-history" class="wash-list"></div>`;
+    container.appendChild(bookingsSection);
+    // Initialise the dynamic lists after a tick to ensure DOM elements exist
+    setTimeout(() => {
+      // Define render functions if not already defined by visiting the respective pages
+      if (typeof initMyWashesPage === 'function') initMyWashesPage();
+      if (typeof initMyBookingsPage === 'function') initMyBookingsPage();
+    }, 0);
   }
 }
 
@@ -1492,11 +1535,20 @@ function initProfilePage() {
 // email and phone number.  Users are always students in this version.  A
 // real implementation would integrate Google sign‑in here.
 function loginUser(email, phone) {
+  // When a user signs in we capture their contact details.  We also
+  // provide default hostel and room for demonstration purposes.  In a
+  // full deployment these could be loaded from the campus directory or
+  // prompted from the user at first login.
   state.user = {
     id: 'u-' + Date.now(),
     role: 'student',
     email: email.trim(),
     phone: phone.trim() || null,
+    // Default values for hostel and room; update these as appropriate
+    hostel: 'LVH',
+    room: '188',
+    // Derive a simple name from the email by taking the part before the @
+    name: email.trim().split('@')[0]
   };
   saveState();
   pushNotice('Logged in as ' + state.user.email, 'info');
