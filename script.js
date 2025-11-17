@@ -67,6 +67,74 @@ function saveState() {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Authentication persistence helpers
+//
+// Demo login is intentionally simple.  Credentials are validated client-side and
+// the active user is mirrored into a short-lived cookie so any page will prompt
+// once and then remember the mode (student/admin) until logout.
+function isValidDemoUser(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return user.email === DEMO_ADMIN.email;
+  if (user.role === 'student') return user.email === DEMO_STUDENT.email;
+  return false;
+}
+
+function setAuthCookie(user) {
+  if (!user) return;
+  const payload = {
+    id: user.id,
+    role: user.role,
+    email: user.email,
+    phone: user.phone || null,
+    name: user.name || null,
+  };
+  const encoded = encodeURIComponent(JSON.stringify(payload));
+  document.cookie = `${AUTH_COOKIE_KEY}=${encoded}; path=/; max-age=${60 * 60 * 24 * 30}`;
+}
+
+function readAuthCookie() {
+  const raw = document.cookie || '';
+  const cookies = raw.split(';');
+  for (const cookie of cookies) {
+    const trimmed = cookie.trim();
+    if (!trimmed.startsWith(`${AUTH_COOKIE_KEY}=`)) continue;
+    try {
+      const value = decodeURIComponent(trimmed.split('=').slice(1).join('='));
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function clearAuthCookie() {
+  document.cookie = `${AUTH_COOKIE_KEY}=; path=/; max-age=0`;
+}
+
+function syncUserFromCookie() {
+  const cookieUser = readAuthCookie();
+  if (!cookieUser || !isValidDemoUser(cookieUser)) {
+    clearAuthCookie();
+    if (state) {
+      state.user = null;
+      saveState();
+    }
+    return;
+  }
+  state.user = {
+    id: cookieUser.id || `${cookieUser.role}-${Date.now()}`,
+    role: cookieUser.role,
+    email: cookieUser.email,
+    phone: cookieUser.phone || null,
+    hostel: cookieUser.role === 'student' ? DEMO_STUDENT.hostel : '',
+    room: cookieUser.role === 'student' ? DEMO_STUDENT.room : '',
+    name: cookieUser.name || (cookieUser.email ? cookieUser.email.split('@')[0] : ''),
+  };
+  saveState();
+}
+
 // Create an array of machine objects with random starting statuses.  This
 // function assumes a single hostel (LVH) with 4 floors and 5 machines per
 // floor.  Machines are labelled like M-1A, M-1B, etc.
@@ -219,7 +287,6 @@ function initState() {
       // CANCELLED.
       rooms: makeRooms(),
       bookings: [],
-      user: null,
     };
     // Initialise watchFree flags for all hostels and floors present in machines.
     const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
@@ -1994,6 +2061,7 @@ function updateUserContact(phone) {
 function logoutUser() {
   state.user = null;
   saveState();
+  clearAuthCookie();
   pushNotice('Logged out', 'info');
   window.location.href = 'index.html';
 }
