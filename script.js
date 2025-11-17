@@ -36,32 +36,6 @@ const STATE_VERSION = 3;
 let state = null;
 const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
 let commonRoomDB = null;
-const AUTH_COOKIE_KEY = 'hostelsync_auth';
-const ACCOUNT_DB_KEY = 'hostelsync_accounts';
-let accountDb = null;
-
-// Demo credentials live in a tiny in-browser “database” to make the role-based
-// checks feel more realistic. Only these two accounts are supported.
-const DEFAULT_ACCOUNTS = [
-  {
-    id: 'student-1',
-    role: 'student',
-    email: 'student@hostel.edu',
-    password: 'student123',
-    name: 'Sample Student',
-    hostel: 'LVH',
-    room: '101',
-  },
-  {
-    id: 'admin-1',
-    role: 'admin',
-    email: 'admin@hostel.edu',
-    password: 'admin123',
-    name: 'Common Room Admin',
-  },
-];
-const DEMO_STUDENT = DEFAULT_ACCOUNTS.find((a) => a.role === 'student');
-const DEMO_ADMIN = DEFAULT_ACCOUNTS.find((a) => a.role === 'admin');
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -94,54 +68,6 @@ function saveState() {
 }
 
 // -----------------------------------------------------------------------------
-// Account “database” helpers
-//
-// A minimal localStorage-backed store for the two demo users. Roles are kept
-// with each record so role-based routing can be enforced from a single source
-// of truth.
-function initAccountDb(forceReset = false) {
-  if (!forceReset) {
-    try {
-      const stored = localStorage.getItem(ACCOUNT_DB_KEY);
-      if (stored) {
-        accountDb = JSON.parse(stored);
-      }
-    } catch (err) {
-      console.warn('Failed to parse account DB, resetting', err);
-    }
-  }
-  if (!accountDb || !Array.isArray(accountDb.accounts) || accountDb.accounts.length === 0) {
-    accountDb = { accounts: DEFAULT_ACCOUNTS };
-    saveAccountDb();
-  }
-}
-
-function saveAccountDb() {
-  if (accountDb) {
-    localStorage.setItem(ACCOUNT_DB_KEY, JSON.stringify(accountDb));
-  }
-}
-
-function ensureAccountDb() {
-  if (!accountDb) initAccountDb(false);
-}
-
-function findAccountByEmail(email) {
-  ensureAccountDb();
-  const cleaned = (email || '').trim().toLowerCase();
-  return accountDb.accounts.find((a) => a.email.toLowerCase() === cleaned) || null;
-}
-
-function authenticateWithAccount(email, password, expectedRole) {
-  const account = findAccountByEmail(email);
-  if (!account) return { ok: false, error: 'Account not found for that email.' };
-  if (expectedRole && account.role !== expectedRole)
-    return { ok: false, error: 'This account is not allowed for that role.' };
-  if (account.password !== password) return { ok: false, error: 'Incorrect password.' };
-  return { ok: true, account };
-}
-
-// -----------------------------------------------------------------------------
 // Authentication persistence helpers
 //
 // Demo login is intentionally simple.  Credentials are validated client-side and
@@ -149,8 +75,9 @@ function authenticateWithAccount(email, password, expectedRole) {
 // once and then remember the mode (student/admin) until logout.
 function isValidDemoUser(user) {
   if (!user) return false;
-  const account = findAccountByEmail(user.email);
-  return !!account && account.role === user.role;
+  if (user.role === 'admin') return user.email === DEMO_ADMIN.email;
+  if (user.role === 'student') return user.email === DEMO_STUDENT.email;
+  return false;
 }
 
 function setAuthCookie(user) {
@@ -161,8 +88,6 @@ function setAuthCookie(user) {
     email: user.email,
     phone: user.phone || null,
     name: user.name || null,
-    hostel: user.hostel || null,
-    room: user.room || null,
   };
   const encoded = encodeURIComponent(JSON.stringify(payload));
   document.cookie = `${AUTH_COOKIE_KEY}=${encoded}; path=/; max-age=${60 * 60 * 24 * 30}`;
@@ -190,8 +115,7 @@ function clearAuthCookie() {
 
 function syncUserFromCookie() {
   const cookieUser = readAuthCookie();
-  const account = cookieUser ? findAccountByEmail(cookieUser.email) : null;
-  if (!account || !cookieUser || !isValidDemoUser(cookieUser)) {
+  if (!cookieUser || !isValidDemoUser(cookieUser)) {
     clearAuthCookie();
     if (state) {
       state.user = null;
@@ -200,13 +124,13 @@ function syncUserFromCookie() {
     return;
   }
   state.user = {
-    id: account.id || cookieUser.id || `${account.role}-${Date.now()}`,
-    role: account.role,
-    email: account.email,
+    id: cookieUser.id || `${cookieUser.role}-${Date.now()}`,
+    role: cookieUser.role,
+    email: cookieUser.email,
     phone: cookieUser.phone || null,
-    hostel: account.hostel || '',
-    room: account.room || '',
-    name: account.name || (cookieUser.email ? cookieUser.email.split('@')[0] : ''),
+    hostel: cookieUser.role === 'student' ? DEMO_STUDENT.hostel : '',
+    room: cookieUser.role === 'student' ? DEMO_STUDENT.room : '',
+    name: cookieUser.name || (cookieUser.email ? cookieUser.email.split('@')[0] : ''),
   };
   saveState();
 }
@@ -658,6 +582,7 @@ function submitBooking(room, startAt, endAt, reason) {
   state.bookings = commonRoomDB.bookings;
   pushNotice(`Request submitted for ${room.label}.`, 'info');
   persistCommonRoomState();
+  simulateApproval(booking.id);
   // update bookings view if present
   if (typeof renderMyBookings === 'function') renderMyBookings();
   if (typeof updateRoomsView === 'function') updateRoomsView();
@@ -666,44 +591,29 @@ function submitBooking(room, startAt, endAt, reason) {
 // Simulate admin approval.  After a short delay, if the booking is still
 // pending, mark it as approved and notify the user.  In a real system this
 // would involve server-side logic and admin interaction.
-// Admin approval helpers. These replace the earlier simulated approval and
-// allow an admin view to explicitly approve or reject requests.
-function approveBooking(bookingId) {
-  ensureCommonRoomDb();
-  const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
-  if (idx >= 0 && commonRoomDB.bookings[idx].status === 'PENDING') {
-    const booking = commonRoomDB.bookings[idx];
-    commonRoomDB.bookings[idx] = {
-      ...booking,
-      status: 'APPROVED',
-      updatedAt: Date.now(),
-    };
-    state.bookings = commonRoomDB.bookings;
-    pushNotice(`Booking approved for ${booking.roomLabel}.`, 'success');
-    persistCommonRoomState();
-    if (typeof renderMyBookings === 'function') renderMyBookings();
-    if (typeof updateRoomsView === 'function') updateRoomsView();
-    if (typeof renderAdminBookings === 'function') renderAdminBookings();
-  }
-}
-
-function rejectBooking(bookingId) {
-  ensureCommonRoomDb();
-  const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
-  if (idx >= 0 && commonRoomDB.bookings[idx].status === 'PENDING') {
-    const booking = commonRoomDB.bookings[idx];
-    commonRoomDB.bookings[idx] = {
-      ...booking,
-      status: 'REJECTED',
-      updatedAt: Date.now(),
-    };
-    state.bookings = commonRoomDB.bookings;
-    pushNotice(`Booking rejected for ${booking.roomLabel}.`, 'warning');
-    persistCommonRoomState();
-    if (typeof renderMyBookings === 'function') renderMyBookings();
-    if (typeof updateRoomsView === 'function') updateRoomsView();
-    if (typeof renderAdminBookings === 'function') renderAdminBookings();
-  }
+function simulateApproval(bookingId) {
+  setTimeout(() => {
+    ensureCommonRoomDb();
+    const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
+    if (idx >= 0) {
+      const booking = commonRoomDB.bookings[idx];
+      if (booking.status === 'PENDING') {
+        commonRoomDB.bookings[idx] = {
+          ...booking,
+          status: 'APPROVED',
+          updatedAt: Date.now(),
+        };
+        state.bookings = commonRoomDB.bookings;
+        pushNotice(
+          `Booking approved for ${booking.roomLabel}. Please keep the room clean and tidy.`,
+          'success'
+        );
+        persistCommonRoomState();
+        if (typeof renderMyBookings === 'function') renderMyBookings();
+        if (typeof updateRoomsView === 'function') updateRoomsView();
+      }
+    }
+  }, 5000);
 }
 
 // Cancel an existing booking.  Changes status to CANCELLED and notifies
@@ -1138,14 +1048,6 @@ function initAdminBookingsPage() {
   const approvedList = document.getElementById('approved-bookings');
   if (!pendingList || !approvedList) return;
 
-  const logoutLink = document.getElementById('admin-logout');
-  if (logoutLink) {
-    logoutLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      logoutUser();
-    });
-  }
-
   window.renderAdminBookings = function renderAdminBookings() {
     ensureCommonRoomDb();
     pendingList.innerHTML = '';
@@ -1214,14 +1116,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // present any debug alerts in production.  Previous debug alerts have been
   // removed.
   initState();
-  syncUserFromCookie();
   const canProceed = ensureAuthMode();
   startTick();
-  if (!canProceed) {
-    // Ensure the auth UI is visible even if an earlier render failed.
-    showAuthOverlay();
-    return;
-  }
+  if (!canProceed) return;
   const bodyClass = document.body.classList;
   if (bodyClass.contains('laundry-page')) {
     initLaundryPage();
@@ -1762,27 +1659,24 @@ function initAlertsPage() {
 // credentials before the rest of the UI is shown.  Only the provided demo
 // accounts are accepted.
 function ensureAuthMode() {
-  ensureAccountDb();
   const body = document.body;
   const onAdminPage = body.classList.contains('admin-bookings-page');
-  const validPersisted = isValidDemoUser(state.user);
+  const validPersisted =
+    state.user &&
+    ((state.user.role === 'admin' && state.user.email === DEMO_ADMIN.email) ||
+      (state.user.role === 'student' && state.user.email === DEMO_STUDENT.email));
 
   if (!validPersisted) {
     state.user = null;
     saveState();
-    clearAuthCookie();
   }
   if (!state.user) {
     body.classList.add('auth-locked');
     showAuthOverlay();
     return false;
   }
-  body.classList.remove('auth-locked');
-  const overlay = document.getElementById('auth-overlay');
-  if (overlay) overlay.remove();
   const isAdmin = state.user.role === 'admin';
   body.classList.toggle('admin-mode', isAdmin);
-  setAuthCookie(state.user);
   if (isAdmin && !onAdminPage) {
     window.location.href = 'admin-bookings.html';
     return false;
@@ -1845,13 +1739,14 @@ function showAuthOverlay() {
   studentForm.appendChild(sSubmit);
   studentForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    const result = authenticateWithAccount(sEmail.value, sPass.value, 'student');
-    if (!result.ok || !result.account) {
-      sError.textContent = result.error || 'Use the provided student credentials to continue.';
+    const valid =
+      sEmail.value.trim().toLowerCase() === DEMO_STUDENT.email && sPass.value === DEMO_STUDENT.password;
+    if (!valid) {
+      sError.textContent = 'Use the provided student credentials to continue.';
       return;
     }
     sError.textContent = '';
-    loginUser(result.account, '', 'student', result.account.name, {
+    loginUser(DEMO_STUDENT.email, '', 'student', DEMO_STUDENT.name, {
       redirectTo: window.location.pathname.split('/').pop() || 'index.html',
     });
   });
@@ -1885,13 +1780,14 @@ function showAuthOverlay() {
   adminForm.appendChild(aSubmit);
   adminForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    const result = authenticateWithAccount(aEmail.value, aPass.value, 'admin');
-    if (!result.ok || !result.account) {
-      aError.textContent = result.error || 'Use the provided admin credentials to continue.';
+    const valid =
+      aEmail.value.trim().toLowerCase() === DEMO_ADMIN.email && aPass.value === DEMO_ADMIN.password;
+    if (!valid) {
+      aError.textContent = 'Use the provided admin credentials to continue.';
       return;
     }
     aError.textContent = '';
-    loginUser(result.account, '', 'admin', result.account.name, { redirectTo: 'admin-bookings.html' });
+    loginUser(DEMO_ADMIN.email, '', 'admin', DEMO_ADMIN.name, { redirectTo: 'admin-bookings.html' });
   });
 
   formsWrapper.appendChild(studentForm);
@@ -1920,7 +1816,7 @@ function initProfilePage() {
     form.appendChild(heading);
     const subtitle = document.createElement('p');
     subtitle.className = 'muted';
-    subtitle.textContent = `${DEMO_STUDENT.email} / ${DEMO_STUDENT.password}`;
+    subtitle.textContent = 'Use student@hostel.edu / student123';
     form.appendChild(subtitle);
     const emailLabel = document.createElement('label');
     emailLabel.textContent = 'Academic email (Google)';
@@ -1961,14 +1857,13 @@ function initProfilePage() {
       e.preventDefault();
       const email = emailInput.value.trim().toLowerCase();
       const password = passInput.value;
-      const result = authenticateWithAccount(email, password, 'student');
-      if (!result.ok || !result.account) {
-        errorMsg.textContent = result.error || 'Use the provided student credentials.';
+      if (email !== DEMO_STUDENT.email || password !== DEMO_STUDENT.password) {
+        errorMsg.textContent = 'Use the provided student credentials.';
         return;
       }
       const phone = phoneInput.value.trim();
       errorMsg.textContent = '';
-      loginUser(result.account, phone, 'student', result.account.name, {
+      loginUser(DEMO_STUDENT.email, phone, 'student', DEMO_STUDENT.name, {
         redirectTo: 'index.html',
       });
     });
@@ -1995,7 +1890,7 @@ function initProfilePage() {
       aForm.appendChild(h);
       const hint = document.createElement('p');
       hint.className = 'muted';
-      hint.textContent = `${DEMO_ADMIN.email} / ${DEMO_ADMIN.password}`;
+      hint.textContent = 'Use admin@hostel.edu / admin123';
       aForm.appendChild(hint);
       // Admin email field
       const aEmailLabel = document.createElement('label');
@@ -2031,13 +1926,12 @@ function initProfilePage() {
         evt.preventDefault();
         const emailVal = aEmailInput.value.trim().toLowerCase();
         const passVal = aPassInput.value;
-        const result = authenticateWithAccount(emailVal, passVal, 'admin');
-        if (!result.ok || !result.account) {
-          aError.textContent = result.error || 'Use the provided admin credentials.';
+        if (emailVal !== DEMO_ADMIN.email || passVal !== DEMO_ADMIN.password) {
+          aError.textContent = 'Use the provided admin credentials.';
           return;
         }
         aError.textContent = '';
-        loginUser(result.account, '', 'admin', result.account.name, { redirectTo: 'admin-bookings.html' });
+        loginUser(DEMO_ADMIN.email, '', 'admin', DEMO_ADMIN.name, { redirectTo: 'admin-bookings.html' });
       });
       // On back link click, re-render student login page
       backP.querySelector('a').addEventListener('click', (evt2) => {
@@ -2126,37 +2020,25 @@ function initProfilePage() {
 // Login a user and persist to state.  Generates a simple id and records
 // email and phone number.  The role controls whether the user sees the
 // student experience or the admin approvals view.
-function loginUser(accountOrEmail, phone, roleHint = 'student', nameOverride, options = {}) {
-  const account = typeof accountOrEmail === 'string' ? findAccountByEmail(accountOrEmail) : accountOrEmail;
-  if (!account) {
-    pushNotice('Please use the provided demo credentials to continue.', 'warning');
-    showAuthOverlay();
-    return;
-  }
-  if (roleHint && account.role !== roleHint) {
-    pushNotice('That login belongs to a different role.', 'warning');
-    showAuthOverlay();
-    return;
-  }
+function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
+  const cleanedEmail = email.trim();
   state.user = {
-    id: account.id || `${account.role}-${Date.now()}`,
-    role: account.role,
-    email: account.email,
+    id: `${role}-${Date.now()}`,
+    role,
+    email: cleanedEmail,
     phone: (phone || '').trim() || null,
-    hostel: account.hostel || '',
-    room: account.room || '',
-    name: nameOverride || account.name || account.email.split('@')[0],
+    hostel: role === 'student' ? DEMO_STUDENT.hostel : '',
+    room: role === 'student' ? DEMO_STUDENT.room : '',
+    name: nameOverride || cleanedEmail.split('@')[0],
   };
   saveState();
-  setAuthCookie(state.user);
   const overlay = document.getElementById('auth-overlay');
   if (overlay) overlay.remove();
   document.body.classList.remove('auth-locked');
-  document.body.classList.toggle('admin-mode', account.role === 'admin');
+  document.body.classList.toggle('admin-mode', role === 'admin');
   pushNotice('Logged in as ' + state.user.email, 'info');
   const redirectTarget =
-    options.redirectTo ||
-    (account.role === 'admin' ? 'admin-bookings.html' : window.location.pathname.split('/').pop() || 'index.html');
+    options.redirectTo || (role === 'admin' ? 'admin-bookings.html' : window.location.pathname.split('/').pop() || 'index.html');
   window.location.href = redirectTarget;
 }
 
