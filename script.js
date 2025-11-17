@@ -36,24 +36,6 @@ const STATE_VERSION = 3;
 let state = null;
 const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
 let commonRoomDB = null;
-const AUTH_COOKIE_KEY = 'hostelsync_auth';
-
-// Demo credentials. These are the only accepted logins in this prototype and
-// are validated by a simple client-side check before enabling student/admin
-// experiences.
-const DEMO_STUDENT = {
-  email: 'student@hostel.edu',
-  password: 'student123',
-  name: 'Sample Student',
-  hostel: 'LVH',
-  room: '101',
-};
-
-const DEMO_ADMIN = {
-  email: 'admin@hostel.edu',
-  password: 'admin123',
-  name: 'Common Room Admin',
-};
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -599,6 +581,7 @@ function submitBooking(room, startAt, endAt, reason) {
   state.bookings = commonRoomDB.bookings;
   pushNotice(`Request submitted for ${room.label}.`, 'info');
   persistCommonRoomState();
+  simulateApproval(booking.id);
   // update bookings view if present
   if (typeof renderMyBookings === 'function') renderMyBookings();
   if (typeof updateRoomsView === 'function') updateRoomsView();
@@ -607,44 +590,29 @@ function submitBooking(room, startAt, endAt, reason) {
 // Simulate admin approval.  After a short delay, if the booking is still
 // pending, mark it as approved and notify the user.  In a real system this
 // would involve server-side logic and admin interaction.
-// Admin approval helpers. These replace the earlier simulated approval and
-// allow an admin view to explicitly approve or reject requests.
-function approveBooking(bookingId) {
-  ensureCommonRoomDb();
-  const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
-  if (idx >= 0 && commonRoomDB.bookings[idx].status === 'PENDING') {
-    const booking = commonRoomDB.bookings[idx];
-    commonRoomDB.bookings[idx] = {
-      ...booking,
-      status: 'APPROVED',
-      updatedAt: Date.now(),
-    };
-    state.bookings = commonRoomDB.bookings;
-    pushNotice(`Booking approved for ${booking.roomLabel}.`, 'success');
-    persistCommonRoomState();
-    if (typeof renderMyBookings === 'function') renderMyBookings();
-    if (typeof updateRoomsView === 'function') updateRoomsView();
-    if (typeof renderAdminBookings === 'function') renderAdminBookings();
-  }
-}
-
-function rejectBooking(bookingId) {
-  ensureCommonRoomDb();
-  const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
-  if (idx >= 0 && commonRoomDB.bookings[idx].status === 'PENDING') {
-    const booking = commonRoomDB.bookings[idx];
-    commonRoomDB.bookings[idx] = {
-      ...booking,
-      status: 'REJECTED',
-      updatedAt: Date.now(),
-    };
-    state.bookings = commonRoomDB.bookings;
-    pushNotice(`Booking rejected for ${booking.roomLabel}.`, 'warning');
-    persistCommonRoomState();
-    if (typeof renderMyBookings === 'function') renderMyBookings();
-    if (typeof updateRoomsView === 'function') updateRoomsView();
-    if (typeof renderAdminBookings === 'function') renderAdminBookings();
-  }
+function simulateApproval(bookingId) {
+  setTimeout(() => {
+    ensureCommonRoomDb();
+    const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
+    if (idx >= 0) {
+      const booking = commonRoomDB.bookings[idx];
+      if (booking.status === 'PENDING') {
+        commonRoomDB.bookings[idx] = {
+          ...booking,
+          status: 'APPROVED',
+          updatedAt: Date.now(),
+        };
+        state.bookings = commonRoomDB.bookings;
+        pushNotice(
+          `Booking approved for ${booking.roomLabel}. Please keep the room clean and tidy.`,
+          'success'
+        );
+        persistCommonRoomState();
+        if (typeof renderMyBookings === 'function') renderMyBookings();
+        if (typeof updateRoomsView === 'function') updateRoomsView();
+      }
+    }
+  }, 5000);
 }
 
 // Cancel an existing booking.  Changes status to CANCELLED and notifies
@@ -1155,7 +1123,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // present any debug alerts in production.  Previous debug alerts have been
   // removed.
   initState();
-  syncUserFromCookie();
   const canProceed = ensureAuthMode();
   startTick();
   if (!canProceed) return;
@@ -1701,24 +1668,22 @@ function initAlertsPage() {
 function ensureAuthMode() {
   const body = document.body;
   const onAdminPage = body.classList.contains('admin-bookings-page');
-  const validPersisted = isValidDemoUser(state.user);
+  const validPersisted =
+    state.user &&
+    ((state.user.role === 'admin' && state.user.email === DEMO_ADMIN.email) ||
+      (state.user.role === 'student' && state.user.email === DEMO_STUDENT.email));
 
   if (!validPersisted) {
     state.user = null;
     saveState();
-    clearAuthCookie();
   }
   if (!state.user) {
     body.classList.add('auth-locked');
     showAuthOverlay();
     return false;
   }
-  body.classList.remove('auth-locked');
-  const overlay = document.getElementById('auth-overlay');
-  if (overlay) overlay.remove();
   const isAdmin = state.user.role === 'admin';
   body.classList.toggle('admin-mode', isAdmin);
-  setAuthCookie(state.user);
   if (isAdmin && !onAdminPage) {
     window.location.href = 'admin-bookings.html';
     return false;
@@ -2074,7 +2039,6 @@ function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
     name: nameOverride || cleanedEmail.split('@')[0],
   };
   saveState();
-  setAuthCookie(state.user);
   const overlay = document.getElementById('auth-overlay');
   if (overlay) overlay.remove();
   document.body.classList.remove('auth-locked');
