@@ -35,6 +35,7 @@ if ('serviceWorker' in navigator) {
 const STATE_VERSION = 3;
 let state = null;
 const BACKEND_BASE_URL = 'http://localhost:8501/';
+const LIVE_MACHINE_LABELS = ['M-1A', 'M1-A'];
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -45,6 +46,10 @@ const BACKEND_BASE_URL = 'http://localhost:8501/';
 // };
 let tickIntervalStarted = false;
 let liveStatusFetchInFlight = false;
+
+function isLiveMachine(machine) {
+  return !!machine && LIVE_MACHINE_LABELS.includes(machine.label);
+}
 
 // Load state from localStorage.  If parsing fails or no state exists, null is
 // returned.
@@ -202,17 +207,29 @@ function parseAvailabilityFromPayload(payload) {
   if (typeof payload === 'boolean') return payload;
   if (typeof payload === 'string') {
     const lower = payload.toLowerCase();
-    if (lower.includes('available')) return true;
-    if (lower.includes('unavailable') || lower.includes('busy')) return false;
-    if (lower.includes('on')) return true;
-    if (lower.includes('off')) return false;
+    if (
+      lower.includes('unavailable') ||
+      lower.includes('not available') ||
+      lower.includes('busy') ||
+      lower.includes('off')
+    ) {
+      return false;
+    }
+    if (lower.includes('available') || lower.includes('on')) return true;
   }
   if (typeof payload === 'object') {
     if ('available' in payload) return Boolean(payload.available);
     if ('status' in payload) {
       const statusStr = String(payload.status).toLowerCase();
+      if (
+        statusStr.includes('unavailable') ||
+        statusStr.includes('not available') ||
+        statusStr.includes('off') ||
+        statusStr.includes('busy')
+      ) {
+        return false;
+      }
       if (statusStr.includes('available') || statusStr === 'on') return true;
-      if (statusStr.includes('unavailable') || statusStr === 'off') return false;
     }
   }
   return null;
@@ -242,7 +259,7 @@ async function refreshLiveMachineFromBackend() {
   if (liveStatusFetchInFlight) return;
   liveStatusFetchInFlight = true;
   try {
-    const targetMachine = state?.machines?.find((m) => m.label === 'M-1A');
+    const targetMachine = state?.machines?.find((m) => isLiveMachine(m));
     if (!targetMachine) return;
 
     let liveAvailability = null;
@@ -1049,7 +1066,7 @@ function initLaundryPage() {
         .map((m) => ({
           ...m,
           effectiveStatus:
-            m.label === 'M-1A' && m.liveAvailability != null
+            isLiveMachine(m) && m.liveAvailability != null
               ? m.liveAvailability
                 ? 'FREE'
                 : 'MAINT'
@@ -1101,7 +1118,7 @@ function initLaundryPage() {
           const status = document.createElement('div');
           let statusClass = `machine-status status-${m.effectiveStatus.toLowerCase()}`;
           let labelStr;
-          if (m.label === 'M-1A' && m.liveAvailability != null) {
+          if (isLiveMachine(m) && m.liveAvailability != null) {
             const available = m.liveAvailability === true;
             statusClass = `machine-status ${available ? 'status-free' : 'status-maint'}`;
             labelStr = available ? 'Available (live)' : 'Not available (live)';
@@ -1112,7 +1129,7 @@ function initLaundryPage() {
           status.className = statusClass;
           status.textContent = labelStr;
           card.appendChild(status);
-          if (m.label === 'M-1A' && m.liveLog) {
+          if (isLiveMachine(m) && m.liveLog) {
             const log = document.createElement('div');
             log.className = 'machine-subtext live-log';
             log.textContent = `Last log: ${m.liveLog}`;
@@ -1173,7 +1190,7 @@ function openMachineModal(machine) {
   modalTitle.textContent = machine.label;
   modalActions.innerHTML = '';
   const liveStatusLabel =
-    machine.label === 'M-1A' && machine.liveAvailability != null
+    isLiveMachine(machine) && machine.liveAvailability != null
       ? machine.liveAvailability
         ? 'Live status: Available'
         : 'Live status: Not available'
