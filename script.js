@@ -34,6 +34,8 @@ if ('serviceWorker' in navigator) {
 // Incrementing the version forces a reset of the persisted state in localStorage.
 const STATE_VERSION = 3;
 let state = null;
+const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
+let commonRoomDB = null;
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -115,6 +117,74 @@ function makeRooms() {
   return rooms;
 }
 
+// -----------------------------------------------------------------------------
+// Common room database helpers
+//
+// The common room booking experience needs persistent storage that is decoupled
+// from the broader laundry/game state.  We keep a lightweight “database” in
+// localStorage so bookings and the room catalog survive resets and can be
+// reused across pages.
+
+// Load the common room database from localStorage.  If the payload is missing
+// or invalid, null is returned so the caller can seed defaults.
+function loadCommonRoomDb() {
+  const data = localStorage.getItem(COMMON_ROOM_DB_KEY);
+  if (data) {
+    try {
+      const parsed = JSON.parse(data);
+      if (!parsed.rooms || !Array.isArray(parsed.rooms)) return null;
+      if (!parsed.bookings || !Array.isArray(parsed.bookings)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Persist the current database snapshot.
+function saveCommonRoomDb() {
+  if (commonRoomDB) {
+    localStorage.setItem(COMMON_ROOM_DB_KEY, JSON.stringify(commonRoomDB));
+  }
+}
+
+// Ensure the in-memory database is present.  Optionally reset to defaults when
+// the state schema is reset.
+function initCommonRoomDb(forceReset = false) {
+  if (!forceReset) {
+    const loaded = loadCommonRoomDb();
+    if (loaded) {
+      commonRoomDB = loaded;
+    }
+  }
+  if (!commonRoomDB || forceReset) {
+    commonRoomDB = {
+      rooms:
+        state && Array.isArray(state.rooms) && state.rooms.length > 0
+          ? state.rooms
+          : makeRooms(),
+      bookings: state && Array.isArray(state.bookings) ? state.bookings : [],
+    };
+  }
+  state.rooms = commonRoomDB.rooms;
+  state.bookings = commonRoomDB.bookings;
+  saveCommonRoomDb();
+}
+
+// Keep the backing database and app state aligned after any mutation.
+function persistCommonRoomState() {
+  if (!commonRoomDB) initCommonRoomDb(false);
+  commonRoomDB.rooms = state.rooms;
+  commonRoomDB.bookings = state.bookings;
+  saveCommonRoomDb();
+  saveState();
+}
+
+function ensureCommonRoomDb() {
+  if (!commonRoomDB) initCommonRoomDb(false);
+}
+
 // Initialise state if none exists.  We seed machines with random data and
 // prepare empty arrays for washes, notifications and reports.  A watchFree
 // structure tracks which floors the user wants to be alerted about when a
@@ -131,12 +201,7 @@ function initState() {
     state.version !== STATE_VERSION ||
     !state.machines ||
     state.machines.length === 0 ||
-    state.machines.some((m) => !validStatuses.includes(m.status)) ||
-    !state.rooms ||
-    !Array.isArray(state.rooms) ||
-    state.rooms.length === 0 ||
-    !state.bookings ||
-    !Array.isArray(state.bookings);
+    state.machines.some((m) => !validStatuses.includes(m.status));
 
   if (needsReset) {
     state = {
@@ -167,8 +232,9 @@ function initState() {
         state.watchFree[hostel][floor] = false;
       });
     });
-    saveState();
   }
+  initCommonRoomDb(needsReset);
+  saveState();
 }
 
 // Push a notification into the notice list.  If the Web Notifications API is
@@ -419,7 +485,8 @@ function computeCounts(machines) {
 // after an existing booking’s start, and the existing booking is either
 // pending or approved.
 function checkConflict(roomId, startAt, endAt) {
-  return state.bookings.some((b) => {
+  ensureCommonRoomDb();
+  return commonRoomDB.bookings.some((b) => {
     if (b.roomId !== roomId) return false;
     // Only consider bookings that are active or awaiting approval
     if (b.status === 'CANCELLED' || b.status === 'REJECTED') return false;
@@ -430,6 +497,7 @@ function checkConflict(roomId, startAt, endAt) {
 // Submit a new booking request.  Adds a booking with status PENDING to
 // state.bookings, notifies the user and schedules a simulated approval.
 function submitBooking(room, startAt, endAt, reason) {
+  ensureCommonRoomDb();
   const booking = {
     id: `b-${Date.now()}`,
     roomId: room.id,
@@ -442,9 +510,10 @@ function submitBooking(room, startAt, endAt, reason) {
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  state.bookings.unshift(booking);
+  commonRoomDB.bookings.unshift(booking);
+  state.bookings = commonRoomDB.bookings;
   pushNotice(`Request submitted for ${room.label}.`, 'info');
-  saveState();
+  persistCommonRoomState();
   simulateApproval(booking.id);
   // update bookings view if present
   if (typeof renderMyBookings === 'function') renderMyBookings();
@@ -456,20 +525,22 @@ function submitBooking(room, startAt, endAt, reason) {
 // would involve server-side logic and admin interaction.
 function simulateApproval(bookingId) {
   setTimeout(() => {
-    const idx = state.bookings.findIndex((b) => b.id === bookingId);
+    ensureCommonRoomDb();
+    const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
     if (idx >= 0) {
-      const booking = state.bookings[idx];
+      const booking = commonRoomDB.bookings[idx];
       if (booking.status === 'PENDING') {
-        state.bookings[idx] = {
+        commonRoomDB.bookings[idx] = {
           ...booking,
           status: 'APPROVED',
           updatedAt: Date.now(),
         };
+        state.bookings = commonRoomDB.bookings;
         pushNotice(
           `Booking approved for ${booking.roomLabel}. Please keep the room clean and tidy.`,
           'success'
         );
-        saveState();
+        persistCommonRoomState();
         if (typeof renderMyBookings === 'function') renderMyBookings();
         if (typeof updateRoomsView === 'function') updateRoomsView();
       }
@@ -480,17 +551,19 @@ function simulateApproval(bookingId) {
 // Cancel an existing booking.  Changes status to CANCELLED and notifies
 // the user.  Only bookings in PENDING or APPROVED state can be cancelled.
 function cancelBooking(id) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         status: 'CANCELLED',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking cancelled for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       if (typeof updateRoomsView === 'function') updateRoomsView();
     }
@@ -501,9 +574,10 @@ function cancelBooking(id) {
 // status back to PENDING and invokes simulated approval.  Only approved
 // bookings can be extended.
 function extendBooking(id, newEndAt) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'APPROVED') {
       // check that the extension does not exceed 24 hours and does not
       // conflict with other bookings
@@ -516,14 +590,15 @@ function extendBooking(id, newEndAt) {
         alert('Requested extension overlaps with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         endAt: newEndAt,
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Extension requested for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       simulateApproval(booking.id);
     }
@@ -534,9 +609,10 @@ function extendBooking(id, newEndAt) {
 // optionally a new reason.  The booking returns to PENDING status pending
 // approval.  Only pending or approved bookings can be modified.
 function modifyBooking(id, newStartAt, newEndAt, newReason) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
       const diff = newEndAt - newStartAt;
       if (diff <= 0) {
@@ -551,7 +627,7 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         alert('Requested times overlap with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         startAt: newStartAt,
         endAt: newEndAt,
@@ -559,8 +635,9 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking modified for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       simulateApproval(booking.id);
     }
