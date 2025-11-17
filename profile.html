@@ -3,26 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rooms · HostelSync</title>
-    <link rel="manifest" href="manifest.json" />
+    <title>Profile – HostelSync</title>
     <link rel="stylesheet" href="styles.css" />
     <script defer src="script.js"></script>
   </head>
-  <body class="rooms-page">
+  <body class="profile-page">
     <header>
-      <h1>Common Rooms</h1>
+      <h1>My Profile</h1>
       <!-- Mode indicator for students -->
       <p class="sub-text">Student Mode</p>
     </header>
-    <main>
-      <div class="laundry-header">
-        <h2>Select Room</h2>
-        <div class="selector">
-          <label for="ac-filter">Only AC</label>
-          <input type="checkbox" id="ac-filter" />
-        </div>
-      </div>
-      <div id="rooms-grid" class="machines-grid"></div>
+    <main id="profile-container">
+      <!-- Content will be rendered by script.js depending on login state -->
     </main>
     <nav class="bottom-nav">
       <a href="index.html">
@@ -33,7 +25,7 @@
         <span class="icon">🧺</span>
         Laundry
       </a>
-      <a href="rooms.html" class="active">
+      <a href="rooms.html">
         <span class="icon">🚪</span>
         Rooms
       </a>
@@ -42,7 +34,7 @@
         <span class="icon">🔔</span>
         Alerts
       </a>
-      <a href="profile.html">
+      <a href="profile.html" class="active">
         <span class="icon">👤</span>
         Profile
       </a>
