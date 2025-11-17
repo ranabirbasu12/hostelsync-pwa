@@ -600,7 +600,6 @@ function extendBooking(id, newEndAt) {
       pushNotice(`Extension requested for ${booking.roomLabel}.`, 'info');
       persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
-      simulateApproval(booking.id);
     }
   }
 }
@@ -639,7 +638,7 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
       pushNotice(`Booking modified for ${booking.roomLabel}.`, 'info');
       persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
-      simulateApproval(booking.id);
+      if (typeof updateRoomsView === 'function') updateRoomsView();
     }
   }
 }
@@ -689,10 +688,11 @@ function initRoomsPage() {
         chip.classList.add('status-free');
         chip.textContent = 'Free';
       } else {
-        chip.classList.add('status-running');
+        chip.classList.add('status-booked');
         // Show booking end time for clarity
         const endDate = new Date(currentBooking.endAt);
         chip.textContent = `Booked until ${endDate.toLocaleTimeString()}`;
+        card.classList.add('room-unavailable');
       }
       card.appendChild(chip);
       // Click handler to open booking modal
@@ -731,6 +731,34 @@ function openRoomModal(room) {
   const title = document.createElement('h3');
   title.textContent = room.label + (room.hasAC ? ' (AC)' : '');
   modal.appendChild(title);
+  // Existing bookings section
+  const existingBlock = document.createElement('div');
+  existingBlock.className = 'booking-availability';
+  const existingTitle = document.createElement('h4');
+  existingTitle.textContent = 'Booked slots';
+  existingBlock.appendChild(existingTitle);
+  const bookingsList = document.createElement('div');
+  bookingsList.className = 'booking-slot-list';
+  const upcoming = state.bookings
+    .filter((b) => b.roomId === room.id && (b.status === 'APPROVED' || b.status === 'PENDING'))
+    .sort((a, b) => a.startAt - b.startAt);
+  if (upcoming.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No upcoming bookings yet.';
+    bookingsList.appendChild(empty);
+  } else {
+    upcoming.forEach((b) => {
+      const row = document.createElement('div');
+      row.className = 'booking-slot-row';
+      const time = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+      const status = b.status === 'PENDING' ? 'Pending approval' : 'Approved';
+      row.innerHTML = `<strong>${status}</strong><span>${time}</span>`;
+      bookingsList.appendChild(row);
+    });
+  }
+  existingBlock.appendChild(bookingsList);
+  modal.appendChild(existingBlock);
   // Date input
   const dateLabel = document.createElement('label');
   dateLabel.textContent = 'Date';
@@ -821,7 +849,7 @@ function openRoomModal(room) {
     const startTimestamp = startAt.getTime();
     const endTimestamp = endAt.getTime();
     if (checkConflict(room.id, startTimestamp, endTimestamp)) {
-      alert('This room is not available for the selected times.');
+      alert('This room is not available for the selected times. Please choose another slot.');
       return;
     }
     if (!reason) {
@@ -945,6 +973,82 @@ function initMyBookingsPage() {
   setTimeout(() => renderMyBookings(), 0);
 }
 
+// Admin view for booking approvals. This page lists pending requests with
+// approve/reject actions and shows upcoming approved bookings for awareness.
+function initAdminBookingsPage() {
+  const pendingList = document.getElementById('pending-bookings');
+  const approvedList = document.getElementById('approved-bookings');
+  if (!pendingList || !approvedList) return;
+
+  const logoutLink = document.getElementById('admin-logout');
+  if (logoutLink) {
+    logoutLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      logoutUser();
+    });
+  }
+
+  window.renderAdminBookings = function renderAdminBookings() {
+    ensureCommonRoomDb();
+    pendingList.innerHTML = '';
+    approvedList.innerHTML = '';
+    const now = Date.now();
+    const pending = state.bookings.filter((b) => b.status === 'PENDING');
+    const approved = state.bookings
+      .filter((b) => b.status === 'APPROVED' && b.endAt > now)
+      .sort((a, b) => a.startAt - b.startAt);
+
+    if (pending.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No pending requests.';
+      pendingList.appendChild(empty);
+    } else {
+      pending.forEach((b) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const times = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+        info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Reason: ${b.reason}</span>`;
+        const actions = document.createElement('div');
+        actions.className = 'wash-actions';
+        const approveBtn = document.createElement('button');
+        approveBtn.textContent = 'Approve';
+        approveBtn.onclick = () => approveBooking(b.id);
+        const rejectBtn = document.createElement('button');
+        rejectBtn.textContent = 'Reject';
+        rejectBtn.onclick = () => rejectBooking(b.id);
+        actions.appendChild(approveBtn);
+        actions.appendChild(rejectBtn);
+        row.appendChild(info);
+        row.appendChild(actions);
+        pendingList.appendChild(row);
+      });
+    }
+
+    if (approved.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No upcoming approved bookings.';
+      approvedList.appendChild(empty);
+    } else {
+      approved.forEach((b) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const times = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+        info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Approved</span>`;
+        row.appendChild(info);
+        approvedList.appendChild(row);
+      });
+    }
+  };
+
+  setTimeout(() => renderAdminBookings(), 0);
+}
+
 // On DOM ready we initialise state and start the tick.  Then we detect
 // which page we are on by body class and call the appropriate initialiser.
 document.addEventListener('DOMContentLoaded', () => {
@@ -952,7 +1056,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // present any debug alerts in production.  Previous debug alerts have been
   // removed.
   initState();
+  const canProceed = ensureAuthMode();
   startTick();
+  if (!canProceed) return;
   const bodyClass = document.body.classList;
   if (bodyClass.contains('laundry-page')) {
     initLaundryPage();
@@ -964,6 +1070,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initRoomsPage();
   } else if (bodyClass.contains('my-bookings-page')) {
     initMyBookingsPage();
+  } else if (bodyClass.contains('admin-bookings-page')) {
+    initAdminBookingsPage();
   } else if (bodyClass.contains('profile-page')) {
     initProfilePage();
   } else if (bodyClass.contains('home-page')) {
@@ -1484,6 +1592,152 @@ function initAlertsPage() {
   renderAlerts();
 }
 
+// -----------------------------------------------------------------------------
+// Authentication overlay
+//
+// A lightweight, client-side gate that prompts for the demo student/admin
+// credentials before the rest of the UI is shown.  Only the provided demo
+// accounts are accepted.
+function ensureAuthMode() {
+  const body = document.body;
+  const onAdminPage = body.classList.contains('admin-bookings-page');
+  const validPersisted =
+    state.user &&
+    ((state.user.role === 'admin' && state.user.email === DEMO_ADMIN.email) ||
+      (state.user.role === 'student' && state.user.email === DEMO_STUDENT.email));
+
+  if (!validPersisted) {
+    state.user = null;
+    saveState();
+  }
+  if (!state.user) {
+    body.classList.add('auth-locked');
+    showAuthOverlay();
+    return false;
+  }
+  const isAdmin = state.user.role === 'admin';
+  body.classList.toggle('admin-mode', isAdmin);
+  if (isAdmin && !onAdminPage) {
+    window.location.href = 'admin-bookings.html';
+    return false;
+  }
+  if (!isAdmin && onAdminPage) {
+    window.location.href = 'rooms.html';
+    return false;
+  }
+  return true;
+}
+
+function showAuthOverlay() {
+  let overlay = document.getElementById('auth-overlay');
+  if (overlay) {
+    overlay.classList.add('active');
+    return overlay;
+  }
+  overlay = document.createElement('div');
+  overlay.id = 'auth-overlay';
+  overlay.className = 'auth-overlay active';
+  const card = document.createElement('div');
+  card.className = 'auth-card';
+  const title = document.createElement('h2');
+  title.textContent = 'Log in to continue';
+  const helper = document.createElement('p');
+  helper.className = 'muted';
+  helper.textContent = 'Use the demo accounts below to view student or admin mode.';
+  card.appendChild(title);
+  card.appendChild(helper);
+
+  const formsWrapper = document.createElement('div');
+  formsWrapper.className = 'auth-columns';
+
+  const studentForm = document.createElement('form');
+  studentForm.className = 'auth-form';
+  const sHeading = document.createElement('h3');
+  sHeading.textContent = 'Student mode';
+  const sHint = document.createElement('p');
+  sHint.className = 'muted';
+  sHint.textContent = 'student@hostel.edu / student123';
+  const sEmail = document.createElement('input');
+  sEmail.type = 'email';
+  sEmail.required = true;
+  sEmail.value = DEMO_STUDENT.email;
+  sEmail.placeholder = DEMO_STUDENT.email;
+  const sPass = document.createElement('input');
+  sPass.type = 'password';
+  sPass.required = true;
+  sPass.value = DEMO_STUDENT.password;
+  const sError = document.createElement('div');
+  sError.className = 'auth-error';
+  const sSubmit = document.createElement('button');
+  sSubmit.type = 'submit';
+  sSubmit.textContent = 'Enter student mode';
+  studentForm.appendChild(sHeading);
+  studentForm.appendChild(sHint);
+  studentForm.appendChild(sEmail);
+  studentForm.appendChild(sPass);
+  studentForm.appendChild(sError);
+  studentForm.appendChild(sSubmit);
+  studentForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const valid =
+      sEmail.value.trim().toLowerCase() === DEMO_STUDENT.email && sPass.value === DEMO_STUDENT.password;
+    if (!valid) {
+      sError.textContent = 'Use the provided student credentials to continue.';
+      return;
+    }
+    sError.textContent = '';
+    loginUser(DEMO_STUDENT.email, '', 'student', DEMO_STUDENT.name, {
+      redirectTo: window.location.pathname.split('/').pop() || 'index.html',
+    });
+  });
+
+  const adminForm = document.createElement('form');
+  adminForm.className = 'auth-form';
+  const aHeading = document.createElement('h3');
+  aHeading.textContent = 'Admin mode';
+  const aHint = document.createElement('p');
+  aHint.className = 'muted';
+  aHint.textContent = 'admin@hostel.edu / admin123';
+  const aEmail = document.createElement('input');
+  aEmail.type = 'email';
+  aEmail.required = true;
+  aEmail.value = DEMO_ADMIN.email;
+  aEmail.placeholder = DEMO_ADMIN.email;
+  const aPass = document.createElement('input');
+  aPass.type = 'password';
+  aPass.required = true;
+  aPass.value = DEMO_ADMIN.password;
+  const aError = document.createElement('div');
+  aError.className = 'auth-error';
+  const aSubmit = document.createElement('button');
+  aSubmit.type = 'submit';
+  aSubmit.textContent = 'Enter admin approvals';
+  adminForm.appendChild(aHeading);
+  adminForm.appendChild(aHint);
+  adminForm.appendChild(aEmail);
+  adminForm.appendChild(aPass);
+  adminForm.appendChild(aError);
+  adminForm.appendChild(aSubmit);
+  adminForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const valid =
+      aEmail.value.trim().toLowerCase() === DEMO_ADMIN.email && aPass.value === DEMO_ADMIN.password;
+    if (!valid) {
+      aError.textContent = 'Use the provided admin credentials to continue.';
+      return;
+    }
+    aError.textContent = '';
+    loginUser(DEMO_ADMIN.email, '', 'admin', DEMO_ADMIN.name, { redirectTo: 'admin-bookings.html' });
+  });
+
+  formsWrapper.appendChild(studentForm);
+  formsWrapper.appendChild(adminForm);
+  card.appendChild(formsWrapper);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
 // Initialise the profile page.  If a user is logged in (state.user), show
 // their details and allow updating contact info or logging out.  If no
 // user is logged in, display a simple login form that collects an email
@@ -1494,12 +1748,16 @@ function initProfilePage() {
   if (!container) return;
   container.innerHTML = '';
   if (!state.user) {
-    // Not logged in: show login form
+    // Not logged in: show login form with demo credentials
     const form = document.createElement('form');
     form.className = 'profile-form';
     const heading = document.createElement('h2');
-    heading.textContent = 'Sign in with Google';
+    heading.textContent = 'Student login';
     form.appendChild(heading);
+    const subtitle = document.createElement('p');
+    subtitle.className = 'muted';
+    subtitle.textContent = 'Use student@hostel.edu / student123';
+    form.appendChild(subtitle);
     const emailLabel = document.createElement('label');
     emailLabel.textContent = 'Academic email (Google)';
     emailLabel.setAttribute('for', 'login-email');
@@ -1508,8 +1766,17 @@ function initProfilePage() {
     emailInput.type = 'email';
     emailInput.id = 'login-email';
     emailInput.required = true;
-    emailInput.placeholder = 'you@iimcal.ac.in';
+    emailInput.placeholder = DEMO_STUDENT.email;
+    emailInput.value = DEMO_STUDENT.email;
     form.appendChild(emailInput);
+    const passLabel = document.createElement('label');
+    passLabel.textContent = 'Password';
+    form.appendChild(passLabel);
+    const passInput = document.createElement('input');
+    passInput.type = 'password';
+    passInput.required = true;
+    passInput.value = DEMO_STUDENT.password;
+    form.appendChild(passInput);
     const phoneLabel = document.createElement('label');
     phoneLabel.textContent = 'Phone / WhatsApp (optional)';
     phoneLabel.setAttribute('for', 'login-phone');
@@ -1519,16 +1786,26 @@ function initProfilePage() {
     phoneInput.id = 'login-phone';
     phoneInput.placeholder = '+91 9876543210';
     form.appendChild(phoneInput);
+    const errorMsg = document.createElement('div');
+    errorMsg.className = 'auth-error';
+    form.appendChild(errorMsg);
     const submitBtn = document.createElement('button');
     submitBtn.type = 'submit';
     submitBtn.textContent = 'Sign in';
     form.appendChild(submitBtn);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const email = emailInput.value.trim();
-      if (!email) return;
+      const email = emailInput.value.trim().toLowerCase();
+      const password = passInput.value;
+      if (email !== DEMO_STUDENT.email || password !== DEMO_STUDENT.password) {
+        errorMsg.textContent = 'Use the provided student credentials.';
+        return;
+      }
       const phone = phoneInput.value.trim();
-      loginUser(email, phone);
+      errorMsg.textContent = '';
+      loginUser(DEMO_STUDENT.email, phone, 'student', DEMO_STUDENT.name, {
+        redirectTo: 'index.html',
+      });
     });
     // Append the student login form to the container
     container.appendChild(form);
@@ -1551,13 +1828,18 @@ function initProfilePage() {
       const h = document.createElement('h2');
       h.textContent = 'Admin login';
       aForm.appendChild(h);
+      const hint = document.createElement('p');
+      hint.className = 'muted';
+      hint.textContent = 'Use admin@hostel.edu / admin123';
+      aForm.appendChild(hint);
       // Admin email field
       const aEmailLabel = document.createElement('label');
       aEmailLabel.textContent = 'Admin email';
       aForm.appendChild(aEmailLabel);
       const aEmailInput = document.createElement('input');
       aEmailInput.type = 'email';
-      aEmailInput.placeholder = 'admin@example.com';
+      aEmailInput.placeholder = DEMO_ADMIN.email;
+      aEmailInput.value = DEMO_ADMIN.email;
       aForm.appendChild(aEmailInput);
       // Admin password field
       const aPassLabel = document.createElement('label');
@@ -1565,7 +1847,11 @@ function initProfilePage() {
       aForm.appendChild(aPassLabel);
       const aPassInput = document.createElement('input');
       aPassInput.type = 'password';
+      aPassInput.value = DEMO_ADMIN.password;
       aForm.appendChild(aPassInput);
+      const aError = document.createElement('div');
+      aError.className = 'auth-error';
+      aForm.appendChild(aError);
       // Submit button for admin login
       const aSubmit = document.createElement('button');
       aSubmit.type = 'submit';
@@ -1576,10 +1862,16 @@ function initProfilePage() {
       backP.className = 'admin-link';
       backP.innerHTML = '<a href="#">Back to student login</a>';
       aForm.appendChild(backP);
-      // On admin form submit, simply show a notice (no real auth)
       aForm.addEventListener('submit', (evt) => {
         evt.preventDefault();
-        pushNotice('Admin login is not implemented in this demo.', 'warning');
+        const emailVal = aEmailInput.value.trim().toLowerCase();
+        const passVal = aPassInput.value;
+        if (emailVal !== DEMO_ADMIN.email || passVal !== DEMO_ADMIN.password) {
+          aError.textContent = 'Use the provided admin credentials.';
+          return;
+        }
+        aError.textContent = '';
+        loginUser(DEMO_ADMIN.email, '', 'admin', DEMO_ADMIN.name, { redirectTo: 'admin-bookings.html' });
       });
       // On back link click, re-render student login page
       backP.querySelector('a').addEventListener('click', (evt2) => {
@@ -1666,28 +1958,28 @@ function initProfilePage() {
 }
 
 // Login a user and persist to state.  Generates a simple id and records
-// email and phone number.  Users are always students in this version.  A
-// real implementation would integrate Google sign‑in here.
-function loginUser(email, phone) {
-  // When a user signs in we capture their contact details.  We also
-  // provide default hostel and room for demonstration purposes.  In a
-  // full deployment these could be loaded from the campus directory or
-  // prompted from the user at first login.
+// email and phone number.  The role controls whether the user sees the
+// student experience or the admin approvals view.
+function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
+  const cleanedEmail = email.trim();
   state.user = {
-    id: 'u-' + Date.now(),
-    role: 'student',
-    email: email.trim(),
-    phone: phone.trim() || null,
-    // Default values for hostel and room; update these as appropriate
-    hostel: 'LVH',
-    room: '188',
-    // Derive a simple name from the email by taking the part before the @
-    name: email.trim().split('@')[0]
+    id: `${role}-${Date.now()}`,
+    role,
+    email: cleanedEmail,
+    phone: (phone || '').trim() || null,
+    hostel: role === 'student' ? DEMO_STUDENT.hostel : '',
+    room: role === 'student' ? DEMO_STUDENT.room : '',
+    name: nameOverride || cleanedEmail.split('@')[0],
   };
   saveState();
+  const overlay = document.getElementById('auth-overlay');
+  if (overlay) overlay.remove();
+  document.body.classList.remove('auth-locked');
+  document.body.classList.toggle('admin-mode', role === 'admin');
   pushNotice('Logged in as ' + state.user.email, 'info');
-  // Redirect back to home or previous page
-  window.location.href = 'index.html';
+  const redirectTarget =
+    options.redirectTo || (role === 'admin' ? 'admin-bookings.html' : window.location.pathname.split('/').pop() || 'index.html');
+  window.location.href = redirectTarget;
 }
 
 // Update the logged in user's contact number and save.
