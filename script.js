@@ -34,8 +34,8 @@ if ('serviceWorker' in navigator) {
 // Incrementing the version forces a reset of the persisted state in localStorage.
 const STATE_VERSION = 3;
 let state = null;
-const BACKEND_BASE_URL = 'http://localhost:8501/';
-const LIVE_MACHINE_LABELS = ['M-1A', 'M1-A'];
+const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
+let commonRoomDB = null;
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -45,11 +45,6 @@ const LIVE_MACHINE_LABELS = ['M-1A', 'M1-A'];
 //   alert('Error: ' + message + '\n' + source + ':' + lineno + ':' + colno);
 // };
 let tickIntervalStarted = false;
-let liveStatusFetchInFlight = false;
-
-function isLiveMachine(machine) {
-  return !!machine && LIVE_MACHINE_LABELS.includes(machine.label);
-}
 
 // Load state from localStorage.  If parsing fails or no state exists, null is
 // returned.
@@ -122,6 +117,74 @@ function makeRooms() {
   return rooms;
 }
 
+// -----------------------------------------------------------------------------
+// Common room database helpers
+//
+// The common room booking experience needs persistent storage that is decoupled
+// from the broader laundry/game state.  We keep a lightweight “database” in
+// localStorage so bookings and the room catalog survive resets and can be
+// reused across pages.
+
+// Load the common room database from localStorage.  If the payload is missing
+// or invalid, null is returned so the caller can seed defaults.
+function loadCommonRoomDb() {
+  const data = localStorage.getItem(COMMON_ROOM_DB_KEY);
+  if (data) {
+    try {
+      const parsed = JSON.parse(data);
+      if (!parsed.rooms || !Array.isArray(parsed.rooms)) return null;
+      if (!parsed.bookings || !Array.isArray(parsed.bookings)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Persist the current database snapshot.
+function saveCommonRoomDb() {
+  if (commonRoomDB) {
+    localStorage.setItem(COMMON_ROOM_DB_KEY, JSON.stringify(commonRoomDB));
+  }
+}
+
+// Ensure the in-memory database is present.  Optionally reset to defaults when
+// the state schema is reset.
+function initCommonRoomDb(forceReset = false) {
+  if (!forceReset) {
+    const loaded = loadCommonRoomDb();
+    if (loaded) {
+      commonRoomDB = loaded;
+    }
+  }
+  if (!commonRoomDB || forceReset) {
+    commonRoomDB = {
+      rooms:
+        state && Array.isArray(state.rooms) && state.rooms.length > 0
+          ? state.rooms
+          : makeRooms(),
+      bookings: state && Array.isArray(state.bookings) ? state.bookings : [],
+    };
+  }
+  state.rooms = commonRoomDB.rooms;
+  state.bookings = commonRoomDB.bookings;
+  saveCommonRoomDb();
+}
+
+// Keep the backing database and app state aligned after any mutation.
+function persistCommonRoomState() {
+  if (!commonRoomDB) initCommonRoomDb(false);
+  commonRoomDB.rooms = state.rooms;
+  commonRoomDB.bookings = state.bookings;
+  saveCommonRoomDb();
+  saveState();
+}
+
+function ensureCommonRoomDb() {
+  if (!commonRoomDB) initCommonRoomDb(false);
+}
+
 // Initialise state if none exists.  We seed machines with random data and
 // prepare empty arrays for washes, notifications and reports.  A watchFree
 // structure tracks which floors the user wants to be alerted about when a
@@ -138,12 +201,7 @@ function initState() {
     state.version !== STATE_VERSION ||
     !state.machines ||
     state.machines.length === 0 ||
-    state.machines.some((m) => !validStatuses.includes(m.status)) ||
-    !state.rooms ||
-    !Array.isArray(state.rooms) ||
-    state.rooms.length === 0 ||
-    !state.bookings ||
-    !Array.isArray(state.bookings);
+    state.machines.some((m) => !validStatuses.includes(m.status));
 
   if (needsReset) {
     state = {
@@ -174,8 +232,9 @@ function initState() {
         state.watchFree[hostel][floor] = false;
       });
     });
-    saveState();
   }
+  initCommonRoomDb(needsReset);
+  saveState();
 }
 
 // Push a notification into the notice list.  If the Web Notifications API is
@@ -200,102 +259,6 @@ function pushNotice(title, kind) {
     }
   }
   saveState();
-}
-
-function parseAvailabilityFromPayload(payload) {
-  if (payload == null) return null;
-  if (typeof payload === 'boolean') return payload;
-  if (typeof payload === 'string') {
-    const lower = payload.toLowerCase();
-    if (
-      lower.includes('unavailable') ||
-      lower.includes('not available') ||
-      lower.includes('busy') ||
-      lower.includes('off')
-    ) {
-      return false;
-    }
-    if (lower.includes('available') || lower.includes('on')) return true;
-  }
-  if (typeof payload === 'object') {
-    if ('available' in payload) return Boolean(payload.available);
-    if ('status' in payload) {
-      const statusStr = String(payload.status).toLowerCase();
-      if (
-        statusStr.includes('unavailable') ||
-        statusStr.includes('not available') ||
-        statusStr.includes('off') ||
-        statusStr.includes('busy')
-      ) {
-        return false;
-      }
-      if (statusStr.includes('available') || statusStr === 'on') return true;
-    }
-  }
-  return null;
-}
-
-function truncateLogSnippet(text) {
-  if (!text) return null;
-  return text.length > 140 ? `${text.slice(0, 139)}…` : text;
-}
-
-function parseLogSnippet(payload) {
-  if (payload == null) return null;
-  if (Array.isArray(payload)) {
-    const first = payload[0];
-    if (typeof first === 'string') return truncateLogSnippet(first);
-    return truncateLogSnippet(JSON.stringify(first));
-  }
-  if (typeof payload === 'object') {
-    if (payload.message) return truncateLogSnippet(String(payload.message));
-    return truncateLogSnippet(JSON.stringify(payload));
-  }
-  if (typeof payload === 'string') return truncateLogSnippet(payload);
-  return null;
-}
-
-async function refreshLiveMachineFromBackend() {
-  if (liveStatusFetchInFlight) return;
-  liveStatusFetchInFlight = true;
-  try {
-    const targetMachine = state?.machines?.find((m) => isLiveMachine(m));
-    if (!targetMachine) return;
-
-    let liveAvailability = null;
-    let liveLog = null;
-
-    try {
-      const statusResp = await fetch(`${BACKEND_BASE_URL}?action=status`, { cache: 'no-store' });
-      const statusText = await statusResp.text();
-      let statusPayload = statusText;
-      try {
-        statusPayload = JSON.parse(statusText);
-      } catch {}
-      liveAvailability = parseAvailabilityFromPayload(statusPayload);
-    } catch (err) {
-      console.error('Unable to load live machine status:', err);
-    }
-
-    try {
-      const logResp = await fetch(`${BACKEND_BASE_URL}?action=log`, { cache: 'no-store' });
-      const logText = await logResp.text();
-      let logPayload = logText;
-      try {
-        logPayload = JSON.parse(logText);
-      } catch {}
-      liveLog = parseLogSnippet(logPayload);
-    } catch (err) {
-      console.error('Unable to load live machine logs:', err);
-    }
-
-    targetMachine.liveAvailability = liveAvailability;
-    targetMachine.liveLog = liveLog;
-    saveState();
-    if (typeof updateLaundryView === 'function') updateLaundryView();
-  } finally {
-    liveStatusFetchInFlight = false;
-  }
 }
 
 // Start a wash on the given machine with the specified duration.  The machine
@@ -522,7 +485,8 @@ function computeCounts(machines) {
 // after an existing booking’s start, and the existing booking is either
 // pending or approved.
 function checkConflict(roomId, startAt, endAt) {
-  return state.bookings.some((b) => {
+  ensureCommonRoomDb();
+  return commonRoomDB.bookings.some((b) => {
     if (b.roomId !== roomId) return false;
     // Only consider bookings that are active or awaiting approval
     if (b.status === 'CANCELLED' || b.status === 'REJECTED') return false;
@@ -533,6 +497,7 @@ function checkConflict(roomId, startAt, endAt) {
 // Submit a new booking request.  Adds a booking with status PENDING to
 // state.bookings, notifies the user and schedules a simulated approval.
 function submitBooking(room, startAt, endAt, reason) {
+  ensureCommonRoomDb();
   const booking = {
     id: `b-${Date.now()}`,
     roomId: room.id,
@@ -545,9 +510,10 @@ function submitBooking(room, startAt, endAt, reason) {
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  state.bookings.unshift(booking);
+  commonRoomDB.bookings.unshift(booking);
+  state.bookings = commonRoomDB.bookings;
   pushNotice(`Request submitted for ${room.label}.`, 'info');
-  saveState();
+  persistCommonRoomState();
   simulateApproval(booking.id);
   // update bookings view if present
   if (typeof renderMyBookings === 'function') renderMyBookings();
@@ -559,20 +525,22 @@ function submitBooking(room, startAt, endAt, reason) {
 // would involve server-side logic and admin interaction.
 function simulateApproval(bookingId) {
   setTimeout(() => {
-    const idx = state.bookings.findIndex((b) => b.id === bookingId);
+    ensureCommonRoomDb();
+    const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
     if (idx >= 0) {
-      const booking = state.bookings[idx];
+      const booking = commonRoomDB.bookings[idx];
       if (booking.status === 'PENDING') {
-        state.bookings[idx] = {
+        commonRoomDB.bookings[idx] = {
           ...booking,
           status: 'APPROVED',
           updatedAt: Date.now(),
         };
+        state.bookings = commonRoomDB.bookings;
         pushNotice(
           `Booking approved for ${booking.roomLabel}. Please keep the room clean and tidy.`,
           'success'
         );
-        saveState();
+        persistCommonRoomState();
         if (typeof renderMyBookings === 'function') renderMyBookings();
         if (typeof updateRoomsView === 'function') updateRoomsView();
       }
@@ -583,17 +551,19 @@ function simulateApproval(bookingId) {
 // Cancel an existing booking.  Changes status to CANCELLED and notifies
 // the user.  Only bookings in PENDING or APPROVED state can be cancelled.
 function cancelBooking(id) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         status: 'CANCELLED',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking cancelled for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       if (typeof updateRoomsView === 'function') updateRoomsView();
     }
@@ -604,9 +574,10 @@ function cancelBooking(id) {
 // status back to PENDING and invokes simulated approval.  Only approved
 // bookings can be extended.
 function extendBooking(id, newEndAt) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'APPROVED') {
       // check that the extension does not exceed 24 hours and does not
       // conflict with other bookings
@@ -619,14 +590,15 @@ function extendBooking(id, newEndAt) {
         alert('Requested extension overlaps with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         endAt: newEndAt,
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Extension requested for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       simulateApproval(booking.id);
     }
@@ -637,9 +609,10 @@ function extendBooking(id, newEndAt) {
 // optionally a new reason.  The booking returns to PENDING status pending
 // approval.  Only pending or approved bookings can be modified.
 function modifyBooking(id, newStartAt, newEndAt, newReason) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
       const diff = newEndAt - newStartAt;
       if (diff <= 0) {
@@ -654,7 +627,7 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         alert('Requested times overlap with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         startAt: newStartAt,
         endAt: newEndAt,
@@ -662,8 +635,9 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking modified for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       simulateApproval(booking.id);
     }
@@ -982,12 +956,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const bodyClass = document.body.classList;
   if (bodyClass.contains('laundry-page')) {
     initLaundryPage();
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        refreshLiveMachineFromBackend();
-        if (typeof updateLaundryView === 'function') updateLaundryView();
-      }
-    });
   } else if (bodyClass.contains('my-washes-page')) {
     initMyWashesPage();
   } else if (bodyClass.contains('alerts-page')) {
@@ -1052,104 +1020,83 @@ function initLaundryPage() {
     hostelSelect.addEventListener('change', () => {
       populateFloors();
       window.updateLaundryView();
-      refreshLiveMachineFromBackend();
     });
     floorSelect.addEventListener('change', () => window.updateLaundryView());
 
     // Update the view with machines and summary for the selected location
     window.updateLaundryView = function updateLaundryView() {
-      try {
-        const selectedHostel = hostelSelect.value;
-        const selectedFloor = parseInt(floorSelect.value);
-      const machines = state.machines
-        .filter((m) => m.hostel === selectedHostel && m.floor === selectedFloor)
-        .map((m) => ({
-          ...m,
-          effectiveStatus:
-            isLiveMachine(m) && m.liveAvailability != null
-              ? m.liveAvailability
-                ? 'FREE'
-                : 'MAINT'
-              : m.status,
-        }));
-        // compute counts
-        const counts = { FREE: 0, RUNNING: 0, AWAITING: 0, MAINT: 0 };
-        machines.forEach((m) => {
-          counts[m.effectiveStatus]++;
-        });
-        // summary chips
-        summaryContainer.innerHTML = '';
-        [
-          { key: 'FREE', label: 'Free' },
-          { key: 'RUNNING', label: 'Running' },
-          { key: 'AWAITING', label: 'Awaiting' },
-          { key: 'MAINT', label: 'Maint' },
-        ].forEach(({ key, label }) => {
-          const chip = document.createElement('div');
-          chip.className = `status-chip status-${key.toLowerCase()}`;
-          chip.textContent = `${counts[key]} ${label}`;
-          summaryContainer.appendChild(chip);
-        });
-        // busy banner
-        busyBanner.style.display = counts['FREE'] === 0 ? 'flex' : 'none';
-        // render machine cards
-        machinesGrid.innerHTML = '';
-        machines.forEach((m) => {
-          const card = document.createElement('div');
-          card.className = 'machine-card';
-          card.dataset.id = m.id;
-          card.dataset.status = m.effectiveStatus;
-          // icon
-          const icon = document.createElement('div');
-          icon.className = 'machine-icon';
-          icon.textContent = '🧺';
-          card.appendChild(icon);
-          // name
-          const name = document.createElement('div');
-          name.className = 'machine-name';
-          name.textContent = m.label;
-          card.appendChild(name);
-          // subtext
-          const sub = document.createElement('div');
-          sub.className = 'machine-subtext';
-          sub.textContent = `Floor ${m.floor} · ${m.hostel}`;
-          card.appendChild(sub);
-          // status chip
-          const status = document.createElement('div');
-          let statusClass = `machine-status status-${m.effectiveStatus.toLowerCase()}`;
-          let labelStr;
-          if (isLiveMachine(m) && m.liveAvailability != null) {
-            const available = m.liveAvailability === true;
-            statusClass = `machine-status ${available ? 'status-free' : 'status-maint'}`;
-            labelStr = available ? 'Available (live)' : 'Not available (live)';
-          } else if (m.effectiveStatus === 'FREE') labelStr = 'Free';
-          else if (m.effectiveStatus === 'RUNNING') labelStr = m.eta != null ? `Running · ${m.eta}m` : 'Running';
-          else if (m.effectiveStatus === 'AWAITING') labelStr = 'Awaiting pickup';
-          else labelStr = 'Maintenance';
-          status.className = statusClass;
-          status.textContent = labelStr;
-          card.appendChild(status);
-          if (isLiveMachine(m) && m.liveLog) {
-            const log = document.createElement('div');
-            log.className = 'machine-subtext live-log';
-            log.textContent = `Last log: ${m.liveLog}`;
-            card.appendChild(log);
-          }
-          // click handler opens modal
-          card.addEventListener('click', () => openMachineModal(m));
-          machinesGrid.appendChild(card);
-        });
-      } catch (err) {
-        console.error('updateLaundryView error:', err);
-      }
-    };
+    try {
+      const selectedHostel = hostelSelect.value;
+      const selectedFloor = parseInt(floorSelect.value);
+      const machines = state.machines.filter(
+        (m) => m.hostel === selectedHostel && m.floor === selectedFloor
+      );
+      // compute counts
+      const counts = { FREE: 0, RUNNING: 0, AWAITING: 0, MAINT: 0 };
+      machines.forEach((m) => {
+        counts[m.status]++;
+      });
+      // summary chips
+      summaryContainer.innerHTML = '';
+      [
+        { key: 'FREE', label: 'Free' },
+        { key: 'RUNNING', label: 'Running' },
+        { key: 'AWAITING', label: 'Awaiting' },
+        { key: 'MAINT', label: 'Maint' },
+      ].forEach(({ key, label }) => {
+        const chip = document.createElement('div');
+        chip.className = `status-chip status-${key.toLowerCase()}`;
+        chip.textContent = `${counts[key]} ${label}`;
+        summaryContainer.appendChild(chip);
+      });
+      // busy banner
+      busyBanner.style.display = counts['FREE'] === 0 ? 'flex' : 'none';
+      // render machine cards
+      machinesGrid.innerHTML = '';
+      machines.forEach((m) => {
+        const card = document.createElement('div');
+        card.className = 'machine-card';
+        card.dataset.id = m.id;
+        card.dataset.status = m.status;
+        // icon
+        const icon = document.createElement('div');
+        icon.className = 'machine-icon';
+        icon.textContent = '🧺';
+        card.appendChild(icon);
+        // name
+        const name = document.createElement('div');
+        name.className = 'machine-name';
+        name.textContent = m.label;
+        card.appendChild(name);
+        // subtext
+        const sub = document.createElement('div');
+        sub.className = 'machine-subtext';
+        sub.textContent = `Floor ${m.floor} · ${m.hostel}`;
+        card.appendChild(sub);
+        // status chip
+        const status = document.createElement('div');
+        status.className = `machine-status status-${m.status.toLowerCase()}`;
+        let labelStr;
+        if (m.status === 'FREE') labelStr = 'Free';
+        else if (m.status === 'RUNNING') labelStr = m.eta != null ? `Running · ${m.eta}m` : 'Running';
+        else if (m.status === 'AWAITING') labelStr = 'Awaiting pickup';
+        else labelStr = 'Maintenance';
+        status.textContent = labelStr;
+        card.appendChild(status);
+        // click handler opens modal
+        card.addEventListener('click', () => openMachineModal(m));
+        machinesGrid.appendChild(card);
+      });
+    } catch (err) {
+      console.error('updateLaundryView error:', err);
+    }
+  };
 
     // Initial render. Perform the update on the next tick to allow the DOM to
     // settle. Without deferring, the view may not populate on the first load.
     setTimeout(() => {
       try { window.updateLaundryView(); } catch (e) { console.error(e); }
     }, 0);
-    refreshLiveMachineFromBackend();
     // Watch-free notify button
     notifyBtn.addEventListener('click', () => {
       const selectedHostel = hostelSelect.value;
@@ -1189,12 +1136,6 @@ function openMachineModal(machine) {
   const modalActions = document.getElementById('modal-actions');
   modalTitle.textContent = machine.label;
   modalActions.innerHTML = '';
-  const liveStatusLabel =
-    isLiveMachine(machine) && machine.liveAvailability != null
-      ? machine.liveAvailability
-        ? 'Live status: Available'
-        : 'Live status: Not available'
-      : null;
   let statusText = '';
   if (machine.status === 'FREE') {
     statusText = 'This machine is free to use.';
@@ -1307,9 +1248,6 @@ function openMachineModal(machine) {
     okBtn.textContent = 'OK';
     okBtn.onclick = () => overlay.classList.remove('active');
     modalActions.appendChild(okBtn);
-  }
-  if (liveStatusLabel) {
-    statusText = statusText ? `${liveStatusLabel} · ${statusText}` : liveStatusLabel;
   }
   // Report button (available for all statuses)
   const reportBtn = document.createElement('button');
