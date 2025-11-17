@@ -34,6 +34,7 @@ if ('serviceWorker' in navigator) {
 // Incrementing the version forces a reset of the persisted state in localStorage.
 const STATE_VERSION = 3;
 let state = null;
+const BACKEND_BASE_URL = 'http://localhost:8501/';
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -43,6 +44,7 @@ let state = null;
 //   alert('Error: ' + message + '\n' + source + ':' + lineno + ':' + colno);
 // };
 let tickIntervalStarted = false;
+let liveStatusFetchInFlight = false;
 
 // Load state from localStorage.  If parsing fails or no state exists, null is
 // returned.
@@ -193,6 +195,90 @@ function pushNotice(title, kind) {
     }
   }
   saveState();
+}
+
+function parseAvailabilityFromPayload(payload) {
+  if (payload == null) return null;
+  if (typeof payload === 'boolean') return payload;
+  if (typeof payload === 'string') {
+    const lower = payload.toLowerCase();
+    if (lower.includes('available')) return true;
+    if (lower.includes('unavailable') || lower.includes('busy')) return false;
+    if (lower.includes('on')) return true;
+    if (lower.includes('off')) return false;
+  }
+  if (typeof payload === 'object') {
+    if ('available' in payload) return Boolean(payload.available);
+    if ('status' in payload) {
+      const statusStr = String(payload.status).toLowerCase();
+      if (statusStr.includes('available') || statusStr === 'on') return true;
+      if (statusStr.includes('unavailable') || statusStr === 'off') return false;
+    }
+  }
+  return null;
+}
+
+function truncateLogSnippet(text) {
+  if (!text) return null;
+  return text.length > 140 ? `${text.slice(0, 139)}…` : text;
+}
+
+function parseLogSnippet(payload) {
+  if (payload == null) return null;
+  if (Array.isArray(payload)) {
+    const first = payload[0];
+    if (typeof first === 'string') return truncateLogSnippet(first);
+    return truncateLogSnippet(JSON.stringify(first));
+  }
+  if (typeof payload === 'object') {
+    if (payload.message) return truncateLogSnippet(String(payload.message));
+    return truncateLogSnippet(JSON.stringify(payload));
+  }
+  if (typeof payload === 'string') return truncateLogSnippet(payload);
+  return null;
+}
+
+async function refreshLiveMachineFromBackend() {
+  if (liveStatusFetchInFlight) return;
+  liveStatusFetchInFlight = true;
+  try {
+    const targetMachine = state?.machines?.find((m) => m.label === 'M-1A');
+    if (!targetMachine) return;
+
+    let liveAvailability = null;
+    let liveLog = null;
+
+    try {
+      const statusResp = await fetch(`${BACKEND_BASE_URL}?action=status`, { cache: 'no-store' });
+      const statusText = await statusResp.text();
+      let statusPayload = statusText;
+      try {
+        statusPayload = JSON.parse(statusText);
+      } catch {}
+      liveAvailability = parseAvailabilityFromPayload(statusPayload);
+    } catch (err) {
+      console.error('Unable to load live machine status:', err);
+    }
+
+    try {
+      const logResp = await fetch(`${BACKEND_BASE_URL}?action=log`, { cache: 'no-store' });
+      const logText = await logResp.text();
+      let logPayload = logText;
+      try {
+        logPayload = JSON.parse(logText);
+      } catch {}
+      liveLog = parseLogSnippet(logPayload);
+    } catch (err) {
+      console.error('Unable to load live machine logs:', err);
+    }
+
+    targetMachine.liveAvailability = liveAvailability;
+    targetMachine.liveLog = liveLog;
+    saveState();
+    if (typeof updateLaundryView === 'function') updateLaundryView();
+  } finally {
+    liveStatusFetchInFlight = false;
+  }
 }
 
 // Start a wash on the given machine with the specified duration.  The machine
@@ -879,6 +965,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const bodyClass = document.body.classList;
   if (bodyClass.contains('laundry-page')) {
     initLaundryPage();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        refreshLiveMachineFromBackend();
+        if (typeof updateLaundryView === 'function') updateLaundryView();
+      }
+    });
   } else if (bodyClass.contains('my-washes-page')) {
     initMyWashesPage();
   } else if (bodyClass.contains('alerts-page')) {
@@ -943,83 +1035,104 @@ function initLaundryPage() {
     hostelSelect.addEventListener('change', () => {
       populateFloors();
       window.updateLaundryView();
+      refreshLiveMachineFromBackend();
     });
     floorSelect.addEventListener('change', () => window.updateLaundryView());
 
     // Update the view with machines and summary for the selected location
     window.updateLaundryView = function updateLaundryView() {
-    try {
-      const selectedHostel = hostelSelect.value;
-      const selectedFloor = parseInt(floorSelect.value);
-      const machines = state.machines.filter(
-        (m) => m.hostel === selectedHostel && m.floor === selectedFloor
-      );
-      // compute counts
-      const counts = { FREE: 0, RUNNING: 0, AWAITING: 0, MAINT: 0 };
-      machines.forEach((m) => {
-        counts[m.status]++;
-      });
-      // summary chips
-      summaryContainer.innerHTML = '';
-      [
-        { key: 'FREE', label: 'Free' },
-        { key: 'RUNNING', label: 'Running' },
-        { key: 'AWAITING', label: 'Awaiting' },
-        { key: 'MAINT', label: 'Maint' },
-      ].forEach(({ key, label }) => {
-        const chip = document.createElement('div');
-        chip.className = `status-chip status-${key.toLowerCase()}`;
-        chip.textContent = `${counts[key]} ${label}`;
-        summaryContainer.appendChild(chip);
-      });
-      // busy banner
-      busyBanner.style.display = counts['FREE'] === 0 ? 'flex' : 'none';
-      // render machine cards
-      machinesGrid.innerHTML = '';
-      machines.forEach((m) => {
-        const card = document.createElement('div');
-        card.className = 'machine-card';
-        card.dataset.id = m.id;
-        card.dataset.status = m.status;
-        // icon
-        const icon = document.createElement('div');
-        icon.className = 'machine-icon';
-        icon.textContent = '🧺';
-        card.appendChild(icon);
-        // name
-        const name = document.createElement('div');
-        name.className = 'machine-name';
-        name.textContent = m.label;
-        card.appendChild(name);
-        // subtext
-        const sub = document.createElement('div');
-        sub.className = 'machine-subtext';
-        sub.textContent = `Floor ${m.floor} · ${m.hostel}`;
-        card.appendChild(sub);
-        // status chip
-        const status = document.createElement('div');
-        status.className = `machine-status status-${m.status.toLowerCase()}`;
-        let labelStr;
-        if (m.status === 'FREE') labelStr = 'Free';
-        else if (m.status === 'RUNNING') labelStr = m.eta != null ? `Running · ${m.eta}m` : 'Running';
-        else if (m.status === 'AWAITING') labelStr = 'Awaiting pickup';
-        else labelStr = 'Maintenance';
-        status.textContent = labelStr;
-        card.appendChild(status);
-        // click handler opens modal
-        card.addEventListener('click', () => openMachineModal(m));
-        machinesGrid.appendChild(card);
-      });
-    } catch (err) {
-      console.error('updateLaundryView error:', err);
-    }
-  };
+      try {
+        const selectedHostel = hostelSelect.value;
+        const selectedFloor = parseInt(floorSelect.value);
+      const machines = state.machines
+        .filter((m) => m.hostel === selectedHostel && m.floor === selectedFloor)
+        .map((m) => ({
+          ...m,
+          effectiveStatus:
+            m.label === 'M-1A' && m.liveAvailability != null
+              ? m.liveAvailability
+                ? 'FREE'
+                : 'MAINT'
+              : m.status,
+        }));
+        // compute counts
+        const counts = { FREE: 0, RUNNING: 0, AWAITING: 0, MAINT: 0 };
+        machines.forEach((m) => {
+          counts[m.effectiveStatus]++;
+        });
+        // summary chips
+        summaryContainer.innerHTML = '';
+        [
+          { key: 'FREE', label: 'Free' },
+          { key: 'RUNNING', label: 'Running' },
+          { key: 'AWAITING', label: 'Awaiting' },
+          { key: 'MAINT', label: 'Maint' },
+        ].forEach(({ key, label }) => {
+          const chip = document.createElement('div');
+          chip.className = `status-chip status-${key.toLowerCase()}`;
+          chip.textContent = `${counts[key]} ${label}`;
+          summaryContainer.appendChild(chip);
+        });
+        // busy banner
+        busyBanner.style.display = counts['FREE'] === 0 ? 'flex' : 'none';
+        // render machine cards
+        machinesGrid.innerHTML = '';
+        machines.forEach((m) => {
+          const card = document.createElement('div');
+          card.className = 'machine-card';
+          card.dataset.id = m.id;
+          card.dataset.status = m.effectiveStatus;
+          // icon
+          const icon = document.createElement('div');
+          icon.className = 'machine-icon';
+          icon.textContent = '🧺';
+          card.appendChild(icon);
+          // name
+          const name = document.createElement('div');
+          name.className = 'machine-name';
+          name.textContent = m.label;
+          card.appendChild(name);
+          // subtext
+          const sub = document.createElement('div');
+          sub.className = 'machine-subtext';
+          sub.textContent = `Floor ${m.floor} · ${m.hostel}`;
+          card.appendChild(sub);
+          // status chip
+          const status = document.createElement('div');
+          let statusClass = `machine-status status-${m.effectiveStatus.toLowerCase()}`;
+          let labelStr;
+          if (m.label === 'M-1A' && m.liveAvailability != null) {
+            const available = m.liveAvailability === true;
+            statusClass = `machine-status ${available ? 'status-free' : 'status-maint'}`;
+            labelStr = available ? 'Available (live)' : 'Not available (live)';
+          } else if (m.effectiveStatus === 'FREE') labelStr = 'Free';
+          else if (m.effectiveStatus === 'RUNNING') labelStr = m.eta != null ? `Running · ${m.eta}m` : 'Running';
+          else if (m.effectiveStatus === 'AWAITING') labelStr = 'Awaiting pickup';
+          else labelStr = 'Maintenance';
+          status.className = statusClass;
+          status.textContent = labelStr;
+          card.appendChild(status);
+          if (m.label === 'M-1A' && m.liveLog) {
+            const log = document.createElement('div');
+            log.className = 'machine-subtext live-log';
+            log.textContent = `Last log: ${m.liveLog}`;
+            card.appendChild(log);
+          }
+          // click handler opens modal
+          card.addEventListener('click', () => openMachineModal(m));
+          machinesGrid.appendChild(card);
+        });
+      } catch (err) {
+        console.error('updateLaundryView error:', err);
+      }
+    };
 
     // Initial render. Perform the update on the next tick to allow the DOM to
     // settle. Without deferring, the view may not populate on the first load.
     setTimeout(() => {
       try { window.updateLaundryView(); } catch (e) { console.error(e); }
     }, 0);
+    refreshLiveMachineFromBackend();
     // Watch-free notify button
     notifyBtn.addEventListener('click', () => {
       const selectedHostel = hostelSelect.value;
@@ -1059,6 +1172,12 @@ function openMachineModal(machine) {
   const modalActions = document.getElementById('modal-actions');
   modalTitle.textContent = machine.label;
   modalActions.innerHTML = '';
+  const liveStatusLabel =
+    machine.label === 'M-1A' && machine.liveAvailability != null
+      ? machine.liveAvailability
+        ? 'Live status: Available'
+        : 'Live status: Not available'
+      : null;
   let statusText = '';
   if (machine.status === 'FREE') {
     statusText = 'This machine is free to use.';
@@ -1171,6 +1290,9 @@ function openMachineModal(machine) {
     okBtn.textContent = 'OK';
     okBtn.onclick = () => overlay.classList.remove('active');
     modalActions.appendChild(okBtn);
+  }
+  if (liveStatusLabel) {
+    statusText = statusText ? `${liveStatusLabel} · ${statusText}` : liveStatusLabel;
   }
   // Report button (available for all statuses)
   const reportBtn = document.createElement('button');

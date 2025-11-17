@@ -240,6 +240,11 @@ main {
   color: var(--text-muted);
 }
 
+.machine-subtext.live-log {
+  color: var(--text);
+  font-style: italic;
+}
+
 .machine-status {
   align-self: flex-start;
   padding: 0.25rem 0.5rem;
