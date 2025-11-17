@@ -1048,14 +1048,6 @@ function initAdminBookingsPage() {
   const approvedList = document.getElementById('approved-bookings');
   if (!pendingList || !approvedList) return;
 
-  const logoutLink = document.getElementById('admin-logout');
-  if (logoutLink) {
-    logoutLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      logoutUser();
-    });
-  }
-
   window.renderAdminBookings = function renderAdminBookings() {
     ensureCommonRoomDb();
     pendingList.innerHTML = '';
