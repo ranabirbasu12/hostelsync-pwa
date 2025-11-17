@@ -34,6 +34,8 @@ if ('serviceWorker' in navigator) {
 // Incrementing the version forces a reset of the persisted state in localStorage.
 const STATE_VERSION = 3;
 let state = null;
+const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
+let commonRoomDB = null;
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -115,6 +117,74 @@ function makeRooms() {
   return rooms;
 }
 
+// -----------------------------------------------------------------------------
+// Common room database helpers
+//
+// The common room booking experience needs persistent storage that is decoupled
+// from the broader laundry/game state.  We keep a lightweight “database” in
+// localStorage so bookings and the room catalog survive resets and can be
+// reused across pages.
+
+// Load the common room database from localStorage.  If the payload is missing
+// or invalid, null is returned so the caller can seed defaults.
+function loadCommonRoomDb() {
+  const data = localStorage.getItem(COMMON_ROOM_DB_KEY);
+  if (data) {
+    try {
+      const parsed = JSON.parse(data);
+      if (!parsed.rooms || !Array.isArray(parsed.rooms)) return null;
+      if (!parsed.bookings || !Array.isArray(parsed.bookings)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Persist the current database snapshot.
+function saveCommonRoomDb() {
+  if (commonRoomDB) {
+    localStorage.setItem(COMMON_ROOM_DB_KEY, JSON.stringify(commonRoomDB));
+  }
+}
+
+// Ensure the in-memory database is present.  Optionally reset to defaults when
+// the state schema is reset.
+function initCommonRoomDb(forceReset = false) {
+  if (!forceReset) {
+    const loaded = loadCommonRoomDb();
+    if (loaded) {
+      commonRoomDB = loaded;
+    }
+  }
+  if (!commonRoomDB || forceReset) {
+    commonRoomDB = {
+      rooms:
+        state && Array.isArray(state.rooms) && state.rooms.length > 0
+          ? state.rooms
+          : makeRooms(),
+      bookings: state && Array.isArray(state.bookings) ? state.bookings : [],
+    };
+  }
+  state.rooms = commonRoomDB.rooms;
+  state.bookings = commonRoomDB.bookings;
+  saveCommonRoomDb();
+}
+
+// Keep the backing database and app state aligned after any mutation.
+function persistCommonRoomState() {
+  if (!commonRoomDB) initCommonRoomDb(false);
+  commonRoomDB.rooms = state.rooms;
+  commonRoomDB.bookings = state.bookings;
+  saveCommonRoomDb();
+  saveState();
+}
+
+function ensureCommonRoomDb() {
+  if (!commonRoomDB) initCommonRoomDb(false);
+}
+
 // Initialise state if none exists.  We seed machines with random data and
 // prepare empty arrays for washes, notifications and reports.  A watchFree
 // structure tracks which floors the user wants to be alerted about when a
@@ -131,12 +201,7 @@ function initState() {
     state.version !== STATE_VERSION ||
     !state.machines ||
     state.machines.length === 0 ||
-    state.machines.some((m) => !validStatuses.includes(m.status)) ||
-    !state.rooms ||
-    !Array.isArray(state.rooms) ||
-    state.rooms.length === 0 ||
-    !state.bookings ||
-    !Array.isArray(state.bookings);
+    state.machines.some((m) => !validStatuses.includes(m.status));
 
   if (needsReset) {
     state = {
@@ -167,8 +232,9 @@ function initState() {
         state.watchFree[hostel][floor] = false;
       });
     });
-    saveState();
   }
+  initCommonRoomDb(needsReset);
+  saveState();
 }
 
 // Push a notification into the notice list.  If the Web Notifications API is
@@ -419,7 +485,8 @@ function computeCounts(machines) {
 // after an existing booking’s start, and the existing booking is either
 // pending or approved.
 function checkConflict(roomId, startAt, endAt) {
-  return state.bookings.some((b) => {
+  ensureCommonRoomDb();
+  return commonRoomDB.bookings.some((b) => {
     if (b.roomId !== roomId) return false;
     // Only consider bookings that are active or awaiting approval
     if (b.status === 'CANCELLED' || b.status === 'REJECTED') return false;
@@ -430,6 +497,7 @@ function checkConflict(roomId, startAt, endAt) {
 // Submit a new booking request.  Adds a booking with status PENDING to
 // state.bookings, notifies the user and schedules a simulated approval.
 function submitBooking(room, startAt, endAt, reason) {
+  ensureCommonRoomDb();
   const booking = {
     id: `b-${Date.now()}`,
     roomId: room.id,
@@ -442,10 +510,10 @@ function submitBooking(room, startAt, endAt, reason) {
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  state.bookings.unshift(booking);
+  commonRoomDB.bookings.unshift(booking);
+  state.bookings = commonRoomDB.bookings;
   pushNotice(`Request submitted for ${room.label}.`, 'info');
-  saveState();
-  simulateApproval(booking.id);
+  persistCommonRoomState();
   // update bookings view if present
   if (typeof renderMyBookings === 'function') renderMyBookings();
   if (typeof updateRoomsView === 'function') updateRoomsView();
@@ -454,43 +522,62 @@ function submitBooking(room, startAt, endAt, reason) {
 // Simulate admin approval.  After a short delay, if the booking is still
 // pending, mark it as approved and notify the user.  In a real system this
 // would involve server-side logic and admin interaction.
-function simulateApproval(bookingId) {
-  setTimeout(() => {
-    const idx = state.bookings.findIndex((b) => b.id === bookingId);
-    if (idx >= 0) {
-      const booking = state.bookings[idx];
-      if (booking.status === 'PENDING') {
-        state.bookings[idx] = {
-          ...booking,
-          status: 'APPROVED',
-          updatedAt: Date.now(),
-        };
-        pushNotice(
-          `Booking approved for ${booking.roomLabel}. Please keep the room clean and tidy.`,
-          'success'
-        );
-        saveState();
-        if (typeof renderMyBookings === 'function') renderMyBookings();
-        if (typeof updateRoomsView === 'function') updateRoomsView();
-      }
-    }
-  }, 5000);
+// Admin approval helpers. These replace the earlier simulated approval and
+// allow an admin view to explicitly approve or reject requests.
+function approveBooking(bookingId) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
+  if (idx >= 0 && commonRoomDB.bookings[idx].status === 'PENDING') {
+    const booking = commonRoomDB.bookings[idx];
+    commonRoomDB.bookings[idx] = {
+      ...booking,
+      status: 'APPROVED',
+      updatedAt: Date.now(),
+    };
+    state.bookings = commonRoomDB.bookings;
+    pushNotice(`Booking approved for ${booking.roomLabel}.`, 'success');
+    persistCommonRoomState();
+    if (typeof renderMyBookings === 'function') renderMyBookings();
+    if (typeof updateRoomsView === 'function') updateRoomsView();
+    if (typeof renderAdminBookings === 'function') renderAdminBookings();
+  }
+}
+
+function rejectBooking(bookingId) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
+  if (idx >= 0 && commonRoomDB.bookings[idx].status === 'PENDING') {
+    const booking = commonRoomDB.bookings[idx];
+    commonRoomDB.bookings[idx] = {
+      ...booking,
+      status: 'REJECTED',
+      updatedAt: Date.now(),
+    };
+    state.bookings = commonRoomDB.bookings;
+    pushNotice(`Booking rejected for ${booking.roomLabel}.`, 'warning');
+    persistCommonRoomState();
+    if (typeof renderMyBookings === 'function') renderMyBookings();
+    if (typeof updateRoomsView === 'function') updateRoomsView();
+    if (typeof renderAdminBookings === 'function') renderAdminBookings();
+  }
 }
 
 // Cancel an existing booking.  Changes status to CANCELLED and notifies
 // the user.  Only bookings in PENDING or APPROVED state can be cancelled.
 function cancelBooking(id) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         status: 'CANCELLED',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking cancelled for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       if (typeof updateRoomsView === 'function') updateRoomsView();
     }
@@ -501,9 +588,10 @@ function cancelBooking(id) {
 // status back to PENDING and invokes simulated approval.  Only approved
 // bookings can be extended.
 function extendBooking(id, newEndAt) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'APPROVED') {
       // check that the extension does not exceed 24 hours and does not
       // conflict with other bookings
@@ -516,16 +604,16 @@ function extendBooking(id, newEndAt) {
         alert('Requested extension overlaps with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         endAt: newEndAt,
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Extension requested for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
-      simulateApproval(booking.id);
     }
   }
 }
@@ -534,9 +622,10 @@ function extendBooking(id, newEndAt) {
 // optionally a new reason.  The booking returns to PENDING status pending
 // approval.  Only pending or approved bookings can be modified.
 function modifyBooking(id, newStartAt, newEndAt, newReason) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
       const diff = newEndAt - newStartAt;
       if (diff <= 0) {
@@ -551,7 +640,7 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         alert('Requested times overlap with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         startAt: newStartAt,
         endAt: newEndAt,
@@ -559,10 +648,11 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking modified for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
-      simulateApproval(booking.id);
+      if (typeof updateRoomsView === 'function') updateRoomsView();
     }
   }
 }
@@ -612,10 +702,11 @@ function initRoomsPage() {
         chip.classList.add('status-free');
         chip.textContent = 'Free';
       } else {
-        chip.classList.add('status-running');
+        chip.classList.add('status-booked');
         // Show booking end time for clarity
         const endDate = new Date(currentBooking.endAt);
         chip.textContent = `Booked until ${endDate.toLocaleTimeString()}`;
+        card.classList.add('room-unavailable');
       }
       card.appendChild(chip);
       // Click handler to open booking modal
@@ -654,6 +745,34 @@ function openRoomModal(room) {
   const title = document.createElement('h3');
   title.textContent = room.label + (room.hasAC ? ' (AC)' : '');
   modal.appendChild(title);
+  // Existing bookings section
+  const existingBlock = document.createElement('div');
+  existingBlock.className = 'booking-availability';
+  const existingTitle = document.createElement('h4');
+  existingTitle.textContent = 'Booked slots';
+  existingBlock.appendChild(existingTitle);
+  const bookingsList = document.createElement('div');
+  bookingsList.className = 'booking-slot-list';
+  const upcoming = state.bookings
+    .filter((b) => b.roomId === room.id && (b.status === 'APPROVED' || b.status === 'PENDING'))
+    .sort((a, b) => a.startAt - b.startAt);
+  if (upcoming.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No upcoming bookings yet.';
+    bookingsList.appendChild(empty);
+  } else {
+    upcoming.forEach((b) => {
+      const row = document.createElement('div');
+      row.className = 'booking-slot-row';
+      const time = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+      const status = b.status === 'PENDING' ? 'Pending approval' : 'Approved';
+      row.innerHTML = `<strong>${status}</strong><span>${time}</span>`;
+      bookingsList.appendChild(row);
+    });
+  }
+  existingBlock.appendChild(bookingsList);
+  modal.appendChild(existingBlock);
   // Date input
   const dateLabel = document.createElement('label');
   dateLabel.textContent = 'Date';
@@ -744,7 +863,7 @@ function openRoomModal(room) {
     const startTimestamp = startAt.getTime();
     const endTimestamp = endAt.getTime();
     if (checkConflict(room.id, startTimestamp, endTimestamp)) {
-      alert('This room is not available for the selected times.');
+      alert('This room is not available for the selected times. Please choose another slot.');
       return;
     }
     if (!reason) {
@@ -868,6 +987,74 @@ function initMyBookingsPage() {
   setTimeout(() => renderMyBookings(), 0);
 }
 
+// Admin view for booking approvals. This page lists pending requests with
+// approve/reject actions and shows upcoming approved bookings for awareness.
+function initAdminBookingsPage() {
+  const pendingList = document.getElementById('pending-bookings');
+  const approvedList = document.getElementById('approved-bookings');
+  if (!pendingList || !approvedList) return;
+
+  window.renderAdminBookings = function renderAdminBookings() {
+    ensureCommonRoomDb();
+    pendingList.innerHTML = '';
+    approvedList.innerHTML = '';
+    const now = Date.now();
+    const pending = state.bookings.filter((b) => b.status === 'PENDING');
+    const approved = state.bookings
+      .filter((b) => b.status === 'APPROVED' && b.endAt > now)
+      .sort((a, b) => a.startAt - b.startAt);
+
+    if (pending.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No pending requests.';
+      pendingList.appendChild(empty);
+    } else {
+      pending.forEach((b) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const times = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+        info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Reason: ${b.reason}</span>`;
+        const actions = document.createElement('div');
+        actions.className = 'wash-actions';
+        const approveBtn = document.createElement('button');
+        approveBtn.textContent = 'Approve';
+        approveBtn.onclick = () => approveBooking(b.id);
+        const rejectBtn = document.createElement('button');
+        rejectBtn.textContent = 'Reject';
+        rejectBtn.onclick = () => rejectBooking(b.id);
+        actions.appendChild(approveBtn);
+        actions.appendChild(rejectBtn);
+        row.appendChild(info);
+        row.appendChild(actions);
+        pendingList.appendChild(row);
+      });
+    }
+
+    if (approved.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No upcoming approved bookings.';
+      approvedList.appendChild(empty);
+    } else {
+      approved.forEach((b) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const times = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+        info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Approved</span>`;
+        row.appendChild(info);
+        approvedList.appendChild(row);
+      });
+    }
+  };
+
+  setTimeout(() => renderAdminBookings(), 0);
+}
+
 // On DOM ready we initialise state and start the tick.  Then we detect
 // which page we are on by body class and call the appropriate initialiser.
 document.addEventListener('DOMContentLoaded', () => {
@@ -887,6 +1074,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initRoomsPage();
   } else if (bodyClass.contains('my-bookings-page')) {
     initMyBookingsPage();
+  } else if (bodyClass.contains('admin-bookings-page')) {
+    initAdminBookingsPage();
   } else if (bodyClass.contains('profile-page')) {
     initProfilePage();
   } else if (bodyClass.contains('home-page')) {
