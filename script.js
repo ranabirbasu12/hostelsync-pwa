@@ -258,6 +258,7 @@ function ensureCommonRoomDb() {
 // structure tracks which floors the user wants to be alerted about when a
 // machine becomes free.
 function initState() {
+  ensureAccountDb();
   state = loadState();
   // If there is no saved state OR the saved state appears invalid
   // (e.g. no machines, or machine statuses are not one of the four
