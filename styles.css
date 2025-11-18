@@ -557,9 +557,16 @@ main {
   font-size: 0.85rem;
 }
 
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .leaderboard-table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 640px;
 }
 
 .leaderboard-table th,
