@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Leaderboard · HostelSync</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="script.js"></script>
+  </head>
+  <body class="leaderboard-page">
+    <header>
+      <h1>Leaderboard</h1>
+      <!-- Mode indicator for students -->
+      <p class="sub-text">Student Mode</p>
+    </header>
+    <main>
+      <section class="leaderboard-hero">
+        <h2>Celebrate sustainable laundry habits</h2>
+        <p class="muted">
+          Track how your hostel community is saving energy and water by running full,
+          efficient washing cycles.
+        </p>
+      </section>
+      <section class="leaderboard-card">
+        <div class="leaderboard-top-row">
+          <div>
+            <h3>Resource Savings Leaderboard</h3>
+            <p class="muted">
+              Ranked by a savings score that rewards full cycles and penalises extra
+              electricity and water use per load.
+            </p>
+          </div>
+          <div class="score-legend">
+            <span class="score-pill">
+              Savings score = (cycles × 10) − (kWh × 2) − (water ÷ 20)
+            </span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Cycles booked</th>
+                <th>Units consumed (kWh)</th>
+                <th>Water consumed (litres)</th>
+                <th>Savings score</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <nav class="bottom-nav">
+      <a href="index.html">
+        <span class="icon">🏠</span>
+        Home
+      </a>
+      <a href="laundry.html">
+        <span class="icon">🧺</span>
+        Laundry
+      </a>
+      <a href="rooms.html">
+        <span class="icon">🚪</span>
+        Rooms
+      </a>
+      <a href="alerts.html">
+        <span class="icon">🔔</span>
+        Alerts
+      </a>
+      <a href="leaderboard.html" class="active">
+        <span class="icon">🏆</span>
+        Leaderboard
+      </a>
+      <a href="profile.html">
+        <span class="icon">👤</span>
+        Profile
+      </a>
+    </nav>
+    <script>
+      const sensorSessions = [
+        { start: '09/11/2025 7:04:41', end: '09/11/2025 7:44:41', user: 'Madhav C309', water: 36.01, energy: 1.51 },
+        { start: '29/11/2025 06:20:09', end: '29/11/2025 07:07:09', user: 'Ishan C302', water: 39.69, energy: 1.79 },
+        { start: '24/11/2025 17:48:24', end: '24/11/2025 18:31:24', user: 'Madhav C309', water: 38.41, energy: 1.23 },
+        { start: '23/11/2025 14:02:34', end: '23/11/2025 14:34:34', user: 'Madhav C309', water: 34.27, energy: 1.23 },
+        { start: '10/11/2025 15:47:54', end: '10/11/2025 16:21:54', user: 'Gaurav Rajput C340', water: 32.72, energy: 1.38 },
+        { start: '22/11/2025 11:03:59', end: '22/11/2025 11:30:59', user: 'Ashanta Roy C338', water: 34.65, energy: 1.36 },
+        { start: '03/11/2025 18:41:46', end: '03/11/2025 19:57:46', user: 'Madhav C309', water: 31.69, energy: 1.75 },
+        { start: '05/11/2025 6:46:58', end: '05/11/2025 7:50:58', user: 'Madhav C309', water: 38.61, energy: 1.36 },
+        { start: '24/11/2025 10:47:20', end: '24/11/2025 11:34:20', user: 'Ishan C302', water: 39.06, energy: 1.25 },
+        { start: '30/11/2025 12:46:14', end: '30/11/2025 13:28:14', user: 'Abhiram C308', water: 37.7, energy: 1.54 },
+        { start: '04/11/2025 14:31:05', end: '04/11/2025 15:10:05', user: 'Abhiram C308', water: 38.82, energy: 1.43 },
+        { start: '19/11/2025 07:29:41', end: '19/11/2025 08:44:41', user: 'Sayondeep Choudhary C339', water: 32.22, energy: 1.65 },
+        { start: '12/11/2025 8:48:35', end: '12/11/2025 10:00:35', user: 'Abhiram C308', water: 38.32, energy: 1.5 },
+        { start: '19/11/2025 07:21:36', end: '19/11/2025 08:10:36', user: 'Prahlad C301', water: 36.78, energy: 1.66 },
+        { start: '16/11/2025 11:18:23', end: '16/11/2025 11:42:23', user: 'Prahlad C301', water: 38.36, energy: 1.53 },
+        { start: '02/11/2025 21:14:12', end: '02/11/2025 22:19:12', user: 'Sayondeep Choudhary C339', water: 34.42, energy: 1.21 },
+        { start: '08/11/2025 19:30:20', end: '08/11/2025 20:31:20', user: 'Abhiram C308', water: 30.41, energy: 1.53 },
+        { start: '09/11/2025 12:25:11', end: '09/11/2025 13:32:11', user: 'Abhiram C308', water: 33.86, energy: 1.53 },
+        { start: '11/11/2025 10:19:45', end: '11/11/2025 11:23:45', user: 'Rishab C307', water: 38.69, energy: 1.34 },
+        { start: '23/11/2025 21:00:00', end: '23/11/2025 21:14:00', user: 'Rishab C307', water: 35.08, energy: 1.54 },
+        { start: '12/11/2025 18:45:47', end: '12/11/2025 19:15:47', user: 'Ashanta Roy C338', water: 30.64, energy: 1.44 },
+        { start: '09/11/2025 16:26:49', end: '09/11/2025 17:04:49', user: 'Rishab C307', water: 34.91, energy: 1.35 },
+        { start: '07/11/2025 13:16:00', end: '07/11/2025 14:01:00', user: 'Rishab C307', water: 33.24, energy: 1.37 },
+        { start: '03/11/2025 16:47:21', end: '03/11/2025 17:18:21', user: 'Ishan C302', water: 38.05, energy: 1.43 },
+        { start: '23/11/2025 12:25:06', end: '23/11/2025 13:08:06', user: 'Rishab C307', water: 35.88, energy: 1.52 },
+        { start: '11/11/2025 19:06:08', end: '11/11/2025 19:28:08', user: 'Shubham Naskar C307', water: 31.39, energy: 1.46 },
+        { start: '18/11/2025 12:15:27', end: '18/11/2025 13:03:27', user: 'Rishab C307', water: 38.67, energy: 1.34 },
+        { start: '02/11/2025 7:35:24', end: '02/11/2025 8:29:24', user: 'Akash C305', water: 33.92, energy: 1.4 },
+        { start: '23/11/2025 10:22:08', end: '23/11/2025 11:48:08', user: 'Gaurav Rajput C340', water: 38.92, energy: 1.78 },
+        { start: '08/11/2025 13:13:49', end: '08/11/2025 13:59:49', user: 'Akash C305', water: 30.76, energy: 1.8 },
+        { start: '15/11/2025 09:24:43', end: '15/11/2025 10:42:43', user: 'Akash C305', water: 33, energy: 1.42 },
+        { start: '19/11/2025 06:48:50', end: '19/11/2025 07:59:50', user: 'Gaurav Rajput C340', water: 32.49, energy: 1.67 },
+        { start: '10/11/2025 14:04:32', end: '10/11/2025 14:35:32', user: 'Akash C305', water: 39.77, energy: 1.52 },
+        { start: '17/11/2025 15:55:46', end: '17/11/2025 16:19:46', user: 'Shubham Naskar C307', water: 38.44, energy: 1.43 },
+        { start: '04/11/2025 7:34:47', end: '04/11/2025 8:32:47', user: 'Akash C305', water: 38.61, energy: 1.46 },
+        { start: '02/11/2025 12:36:55', end: '02/11/2025 13:53:55', user: 'Akash C305', water: 32.72, energy: 1.64 },
+        { start: '30/11/2025 11:41:14', end: '30/11/2025 12:47:14', user: 'Sujith C304', water: 30.99, energy: 1.32 },
+        { start: '22/11/2025 13:23:47', end: '22/11/2025 14:42:47', user: 'Sujith C304', water: 34.16, energy: 1.38 },
+        { start: '19/11/2025 09:29:06', end: '19/11/2025 10:57:06', user: 'Ishan C302', water: 30.86, energy: 1.6 },
+        { start: '03/11/2025 8:50:15', end: '03/11/2025 9:38:15', user: 'Sujith C304', water: 38.52, energy: 1.33 },
+        { start: '18/11/2025 07:04:34', end: '18/11/2025 07:20:34', user: 'Harsh Gawde C336', water: 35.6, energy: 1.56 },
+        { start: '05/11/2025 8:27:46', end: '05/11/2025 9:15:46', user: 'Sujith C304', water: 31.33, energy: 1.58 },
+        { start: '28/11/2025 18:11:07', end: '28/11/2025 18:27:07', user: 'Harsh Gawde C336', water: 30.78, energy: 1.62 },
+        { start: '30/11/2025 16:47:18', end: '30/11/2025 17:29:18', user: 'Sujith C304', water: 30.19, energy: 1.68 },
+        { start: '13/11/2025 17:23:33', end: '13/11/2025 17:58:33', user: 'Sujith C304', water: 32.07, energy: 1.3 },
+        { start: '17/11/2025 17:27:00', end: '17/11/2025 18:07:00', user: 'Swaran C303', water: 32.97, energy: 1.62 },
+        { start: '01/11/2025 10:05:51', end: '01/11/2025 10:17:51', user: 'Shubham Naskar C307', water: 37.45, energy: 1.21 },
+        { start: '03/11/2025 6:55:15', end: '03/11/2025 7:35:15', user: 'Swaran C303', water: 34.58, energy: 1.24 },
+        { start: '16/11/2025 20:44:24', end: '16/11/2025 21:58:24', user: 'Ankush Hait C341', water: 39.08, energy: 1.2 },
+        { start: '13/11/2025 17:42:26', end: '13/11/2025 18:52:26', user: 'Shubham Naskar C307', water: 30.67, energy: 1.32 },
+        { start: '27/11/2025 20:17:04', end: '27/11/2025 21:11:04', user: 'Swaran C303', water: 32.76, energy: 1.39 },
+        { start: '10/11/2025 12:57:21', end: '10/11/2025 13:19:21', user: 'Ankush Hait C341', water: 33.21, energy: 1.4 },
+        { start: '02/11/2025 21:11:02', end: '02/11/2025 22:03:02', user: 'Swaran C303', water: 32.94, energy: 1.35 },
+        { start: '04/11/2025 16:34:00', end: '04/11/2025 17:08:00', user: 'Shubham Naskar C307', water: 39.41, energy: 1.72 }
+      ];
+
+      function buildLeaderboardEntries() {
+        const totals = new Map();
+
+        sensorSessions.forEach((session) => {
+          const key = session.user.trim();
+          if (!totals.has(key)) {
+            totals.set(key, { user: key, cycles: 0, energy: 0, water: 0 });
+          }
+          const agg = totals.get(key);
+          agg.cycles += 1;
+          agg.energy += session.energy;
+          agg.water += session.water;
+        });
+
+        return Array.from(totals.values()).map((entry) => ({
+          ...entry,
+          energy: Number(entry.energy.toFixed(2)),
+          water: Number(entry.water.toFixed(2)),
+        }));
+      }
+
+      const leaderboardEntries = buildLeaderboardEntries();
+
+      function computeSavingsScore(entry) {
+        const rawScore = entry.cycles * 10 - (entry.energy * 2 + entry.water / 20);
+        return Math.max(0, Math.round(rawScore));
+      }
+
+      function renderLeaderboard() {
+        const tbody = document.getElementById('leaderboard-body');
+        tbody.innerHTML = '';
+
+        const sortedEntries = leaderboardEntries
+          .map((entry) => ({ ...entry, score: computeSavingsScore(entry) }))
+          .sort((a, b) =>
+            b.score - a.score ||
+            a.energy / a.cycles - b.energy / b.cycles ||
+            a.water / a.cycles - b.water / b.cycles ||
+            a.user.localeCompare(b.user)
+          );
+
+        sortedEntries.forEach((entry, index) => {
+          const efficiencyKwh = (entry.energy / entry.cycles).toFixed(2);
+          const efficiencyWater = Math.round(entry.water / entry.cycles);
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td class="rank-cell">
+              <span class="rank-badge">#${index + 1}</span>
+              <div class="participant">
+                <strong>${entry.user}</strong>
+                <span class="muted">${efficiencyKwh} kWh · ${efficiencyWater} L per cycle</span>
+              </div>
+            </td>
+            <td>${entry.cycles}</td>
+            <td>${entry.energy}</td>
+            <td>${entry.water}</td>
+            <td><span class="score-chip">${entry.score}</span></td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      document.addEventListener('DOMContentLoaded', renderLeaderboard);
+    </script>
+  </body>
+</html>
