@@ -652,6 +652,55 @@ function cancelBooking(id) {
   }
 }
 
+// Explicitly approve a pending booking from the admin view.  Moves the
+// request into APPROVED, updates timestamps, persists state, and refreshes
+// all related views so the booking disappears from the admin queue and is
+// visible to students as approved.
+function approveBooking(id) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = commonRoomDB.bookings[idx];
+    if (booking.status !== 'APPROVED') {
+      commonRoomDB.bookings[idx] = {
+        ...booking,
+        status: 'APPROVED',
+        updatedAt: Date.now(),
+      };
+      state.bookings = commonRoomDB.bookings;
+      pushNotice(`Booking approved for ${booking.roomLabel}.`, 'success');
+      persistCommonRoomState();
+      if (typeof renderAdminBookings === 'function') renderAdminBookings();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      if (typeof updateRoomsView === 'function') updateRoomsView();
+    }
+  }
+}
+
+// Explicitly reject a pending booking from the admin view.  Marks the
+// booking as REJECTED, persists, and refreshes the admin list and student
+// booking view so the decision is reflected everywhere.
+function rejectBooking(id) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = commonRoomDB.bookings[idx];
+    if (booking.status !== 'REJECTED') {
+      commonRoomDB.bookings[idx] = {
+        ...booking,
+        status: 'REJECTED',
+        updatedAt: Date.now(),
+      };
+      state.bookings = commonRoomDB.bookings;
+      pushNotice(`Booking rejected for ${booking.roomLabel}.`, 'error');
+      persistCommonRoomState();
+      if (typeof renderAdminBookings === 'function') renderAdminBookings();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      if (typeof updateRoomsView === 'function') updateRoomsView();
+    }
+  }
+}
+
 // Extend an existing booking by requesting a new end time.  Sets the booking
 // status back to PENDING and invokes simulated approval.  Only approved
 // bookings can be extended.
