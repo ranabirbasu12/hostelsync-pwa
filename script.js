@@ -1062,6 +1062,9 @@ function initAdminBookingsPage() {
   const approvedList = document.getElementById('approved-bookings');
   if (!pendingList || !approvedList) return;
 
+  const logoutBtn = document.getElementById('admin-logout');
+  if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
+
   window.renderAdminBookings = function renderAdminBookings() {
     ensureCommonRoomDb();
     pendingList.innerHTML = '';
