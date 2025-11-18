@@ -47,7 +47,7 @@ const DEMO_ADMIN = {
 
 // Bump this number whenever the state schema or default machine setup changes.
 // Incrementing the version forces a reset of the persisted state in localStorage.
-const STATE_VERSION = 4;
+const STATE_VERSION = 5;
 let state = null;
 const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
 let commonRoomDB = null;
@@ -151,31 +151,31 @@ function syncUserFromCookie() {
 }
 
 // Create an array of machine objects for the single supported hostel/floor.
-// The current deployment focuses solely on Hostel OH, second floor, with
+// The current deployment focuses solely on Hostel WH, second floor, with
 // three fully functional machines.  Machines are labelled M-2A, M-2B, M-2C
 // to match the second-floor context.
 function makeMachines() {
   return [
     {
-      id: 'OH-2-1',
+      id: 'WH-2-1',
       label: 'M-2A',
-      hostel: 'OH',
+      hostel: 'WH',
       floor: 2,
       status: 'FREE',
       eta: undefined,
     },
     {
-      id: 'OH-2-2',
+      id: 'WH-2-2',
       label: 'M-2B',
-      hostel: 'OH',
+      hostel: 'WH',
       floor: 2,
       status: 'FREE',
       eta: undefined,
     },
     {
-      id: 'OH-2-3',
+      id: 'WH-2-3',
       label: 'M-2C',
-      hostel: 'OH',
+      hostel: 'WH',
       floor: 2,
       status: 'FREE',
       eta: undefined,
@@ -183,20 +183,30 @@ function makeMachines() {
   ];
 }
 
-// Create a list of common rooms for booking.  Each room has an id, a
-// human-readable label and a flag indicating whether AC is available.  The
-// first half of the rooms have AC.
+// Create a list of common rooms for booking.  Each room has an id, hostel,
+// human-readable label and a flag indicating whether AC is available.  All
+// rooms live in WH for this deployment and have AC by default.
 function makeRooms() {
-  const rooms = [];
-  const total = 8;
-  for (let i = 1; i <= total; i++) {
-    rooms.push({
-      id: `CR-${i}`,
-      label: `Common Room ${i}`,
-      hasAC: i <= total / 2,
-    });
-  }
-  return rooms;
+  return [
+    {
+      id: 'WH-pool',
+      hostel: 'WH',
+      label: 'Pool Room',
+      hasAC: true,
+    },
+    {
+      id: 'WH-lan',
+      hostel: 'WH',
+      label: 'LAN Room',
+      hasAC: true,
+    },
+    {
+      id: 'WH-tt',
+      hostel: 'WH',
+      label: 'Table Tennis Room',
+      hasAC: true,
+    },
+  ];
 }
 
 // -----------------------------------------------------------------------------
@@ -780,11 +790,14 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
 function initRoomsPage() {
   const roomsGrid = document.getElementById('rooms-grid');
   const acFilter = document.getElementById('ac-filter');
+  const hostelSelect = document.getElementById('room-hostel-select');
   function updateRoomsView() {
     roomsGrid.innerHTML = '';
     const filterAC = acFilter ? acFilter.checked : false;
+    const selectedHostel = hostelSelect ? hostelSelect.value : null;
     const now = Date.now();
     state.rooms.forEach((room) => {
+      if (selectedHostel && room.hostel && room.hostel !== selectedHostel) return;
       if (filterAC && !room.hasAC) return;
       const card = document.createElement('div');
       card.className = 'machine-card';
@@ -836,6 +849,9 @@ function initRoomsPage() {
   window.updateRoomsView = updateRoomsView;
   if (acFilter) {
     acFilter.addEventListener('change', () => updateRoomsView());
+  }
+  if (hostelSelect) {
+    hostelSelect.addEventListener('change', () => updateRoomsView());
   }
   // Initial render. A short delay ensures the layout has been parsed before inserting
   // dynamic content, which fixes an issue where the grid would not render on first load.
@@ -1222,7 +1238,7 @@ function initLaundryPage() {
   // Remove any leftover debug messaging from earlier development.  We no longer
   // surface alerts on load; instead rely on proper rendering below.
 
-  // Populate hostel options (only LVH for now).  Additional hostels
+  // Populate hostel options (only WH for now).  Additional hostels
   // could be added to state.machines in the future.
   const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
   hostels.forEach((hostel) => {
