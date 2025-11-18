@@ -642,8 +642,10 @@ main {
   box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 0.5rem;
   margin-bottom: 1rem;
+  text-align: center;
 }
 
 .profile-info .avatar {
@@ -653,14 +655,11 @@ main {
   margin-bottom: 0.5rem;
 }
 
-.profile-info .avatar .google-icon {
-  font-size: 2rem;
-  color: var(--accent-color);
-  font-weight: bold;
-}
-
-.profile-info .avatar .user-icon {
-  font-size: 2rem;
+.profile-info .avatar .avatar-img {
+  width: 84px;
+  height: 84px;
+  border-radius: 999px;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.12);
 }
 
 .profile-info p {

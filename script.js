@@ -15,11 +15,11 @@ if ('serviceWorker' in navigator) {
 // Demo authentication constants
 const AUTH_COOKIE_KEY = 'hostelsync_auth';
 const DEMO_STUDENT = {
-  email: 'student@hostel.edu',
+  email: 'subhamn2026@email.iimcal.ac.in',
   password: 'student123',
-  name: 'Student Resident',
-  hostel: 'OH',
-  room: '201',
+  name: 'Shubham Naskar',
+  hostel: 'WH',
+  room: 'C307',
 };
 const DEMO_ADMIN = {
   email: 'admin@hostel.edu',
@@ -1783,7 +1783,7 @@ function showAuthOverlay() {
   sHeading.textContent = 'Student mode';
   const sHint = document.createElement('p');
   sHint.className = 'muted';
-  sHint.textContent = 'student@hostel.edu / student123';
+  sHint.textContent = 'subhamn2026@email.iimcal.ac.in / student123';
   const sEmail = document.createElement('input');
   sEmail.type = 'email';
   sEmail.required = true;
@@ -1883,7 +1883,7 @@ function initProfilePage() {
     form.appendChild(heading);
     const subtitle = document.createElement('p');
     subtitle.className = 'muted';
-    subtitle.textContent = 'Use student@hostel.edu / student123';
+    subtitle.textContent = 'Use subhamn2026@email.iimcal.ac.in / student123';
     form.appendChild(subtitle);
     const emailLabel = document.createElement('label');
     emailLabel.textContent = 'Academic email (Google)';
@@ -2018,7 +2018,11 @@ function initProfilePage() {
     // Avatar with Google and user icons
     const avatarDiv = document.createElement('div');
     avatarDiv.className = 'avatar';
-    avatarDiv.innerHTML = `<span class="google-icon">G</span><span class="user-icon">👤</span>`;
+    const avatarImg = document.createElement('img');
+    avatarImg.src = 'profile-avatar.svg';
+    avatarImg.alt = 'User avatar';
+    avatarImg.className = 'avatar-img';
+    avatarDiv.appendChild(avatarImg);
     infoSection.appendChild(avatarDiv);
     // Name field (fall back to email local part)
     const nameVal = state.user.name || (state.user.email ? state.user.email.split('@')[0] : '');

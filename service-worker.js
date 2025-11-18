@@ -2,7 +2,7 @@
 // Bump the cache name to force the service worker to fetch updated assets.
 // Bump the cache name each time we release a new version so the service
 // worker fetches the latest assets instead of serving old files from cache.
-const CACHE_NAME = 'hostelsync-cache-v7';
+const CACHE_NAME = 'hostelsync-cache-v8';
 const URLS_TO_CACHE = [
   '/',
   '/index.html',
@@ -16,6 +16,7 @@ const URLS_TO_CACHE = [
   '/my-bookings.html',
   '/admin-bookings.html',
   '/profile.html',
+  '/profile-avatar.svg',
   '/icon-192.png',
   '/icon-512.png'
 ];
