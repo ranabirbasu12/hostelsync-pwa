@@ -12,6 +12,21 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// Demo authentication constants
+const AUTH_COOKIE_KEY = 'hostelsync_auth';
+const DEMO_STUDENT = {
+  email: 'subhamn2026@email.iimcal.ac.in',
+  password: 'student123',
+  name: 'Shubham Naskar',
+  hostel: 'WH',
+  room: 'C307',
+};
+const DEMO_ADMIN = {
+  email: 'admin@hostel.edu',
+  password: 'admin123',
+  name: 'Admin Approver',
+};
+
 // Global error handler disabled.  Enable manually for debugging if needed.
 // window.onerror = function(message, source, lineno, colno, error) {
 //   if (!window.__errorShown) {
@@ -32,7 +47,7 @@ if ('serviceWorker' in navigator) {
 
 // Bump this number whenever the state schema or default machine setup changes.
 // Incrementing the version forces a reset of the persisted state in localStorage.
-const STATE_VERSION = 3;
+const STATE_VERSION = 6;
 let state = null;
 const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
 let commonRoomDB = null;
@@ -135,54 +150,63 @@ function syncUserFromCookie() {
   saveState();
 }
 
-// Create an array of machine objects with random starting statuses.  This
-// function assumes a single hostel (LVH) with 4 floors and 5 machines per
-// floor.  Machines are labelled like M-1A, M-1B, etc.
+// Create an array of machine objects for the single supported hostel/floor.
+// The current deployment focuses solely on Hostel WH, second floor, with
+// three fully functional machines.  Machines are labelled M-2A, M-2B, M-2C
+// to match the second-floor context.
 function makeMachines() {
-  // Generate machines for all four hostels (LVH, OH, WH, NH).  Each hostel
-  // contains 4 floors with 5 machines per floor.  Statuses are
-  // randomised for demonstration and align with the original React mock.
-  const hostels = ['LVH', 'OH', 'WH', 'NH'];
-  const machines = [];
-  hostels.forEach((hostel) => {
-    const floors = 4;
-    for (let floor = 1; floor <= floors; floor++) {
-      for (let i = 1; i <= 5; i++) {
-        const id = `${hostel}-${floor}-${i}`;
-        const label = `M-${floor}${String.fromCharCode(64 + i)}`;
-        const running = Math.random() < 0.45;
-        const awaiting = !running && Math.random() < 0.25;
-        machines.push({
-          id,
-          label,
-          hostel,
-          floor,
-          status: running ? 'RUNNING' : awaiting ? 'AWAITING' : 'FREE',
-          eta: running ? Math.floor(8 + Math.random() * 28) : undefined,
-          lastCompletedAt: awaiting
-            ? Date.now() - Math.floor(Math.random() * 1000 * 60 * 30)
-            : undefined,
-        });
-      }
-    }
-  });
-  return machines;
+  return [
+    {
+      id: 'WH-2-1',
+      label: 'M-2A',
+      hostel: 'WH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+    {
+      id: 'WH-2-2',
+      label: 'M-2B',
+      hostel: 'WH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+    {
+      id: 'WH-2-3',
+      label: 'M-2C',
+      hostel: 'WH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+  ];
 }
 
-// Create a list of common rooms for booking.  Each room has an id, a
-// human-readable label and a flag indicating whether AC is available.  The
-// first half of the rooms have AC.
+// Create a list of common rooms for booking.  Each room has an id, hostel,
+// human-readable label and a flag indicating whether AC is available.  All
+// rooms live in WH for this deployment and have AC by default.
 function makeRooms() {
-  const rooms = [];
-  const total = 8;
-  for (let i = 1; i <= total; i++) {
-    rooms.push({
-      id: `CR-${i}`,
-      label: `Common Room ${i}`,
-      hasAC: i <= total / 2,
-    });
-  }
-  return rooms;
+  return [
+    {
+      id: 'WH-pool',
+      hostel: 'WH',
+      label: 'Pool Room',
+      hasAC: true,
+    },
+    {
+      id: 'WH-lan',
+      hostel: 'WH',
+      label: 'LAN Room',
+      hasAC: true,
+    },
+    {
+      id: 'WH-tt',
+      hostel: 'WH',
+      label: 'Table Tennis Room',
+      hasAC: true,
+    },
+  ];
 }
 
 // -----------------------------------------------------------------------------
@@ -220,6 +244,9 @@ function saveCommonRoomDb() {
 // Ensure the in-memory database is present.  Optionally reset to defaults when
 // the state schema is reset.
 function initCommonRoomDb(forceReset = false) {
+  if (forceReset) {
+    localStorage.removeItem(COMMON_ROOM_DB_KEY);
+  }
   if (!forceReset) {
     const loaded = loadCommonRoomDb();
     if (loaded) {
@@ -258,7 +285,6 @@ function ensureCommonRoomDb() {
 // structure tracks which floors the user wants to be alerted about when a
 // machine becomes free.
 function initState() {
-  ensureAccountDb();
   state = loadState();
   // If there is no saved state OR the saved state appears invalid
   // (e.g. no machines, or machine statuses are not one of the four
@@ -270,7 +296,9 @@ function initState() {
     state.version !== STATE_VERSION ||
     !state.machines ||
     state.machines.length === 0 ||
-    state.machines.some((m) => !validStatuses.includes(m.status));
+    state.machines.some((m) => !validStatuses.includes(m.status)) ||
+    !Array.isArray(state.rooms) ||
+    !Array.isArray(state.bookings);
 
   if (needsReset) {
     state = {
@@ -301,7 +329,12 @@ function initState() {
       });
     });
   }
+  // Ensure existing reports carry a status for admin workflows
+  if (state && Array.isArray(state.reports)) {
+    state.reports = state.reports.map((r) => (r.status ? r : { ...r, status: 'OPEN' }));
+  }
   initCommonRoomDb(needsReset);
+  syncUserFromCookie();
   saveState();
 }
 
@@ -440,6 +473,7 @@ function submitReport(machineId, reason, notes, photoDataUrl, affectStatus) {
     notes,
     photoDataUrl,
     createdAt: new Date().toLocaleString(),
+    status: 'OPEN',
   };
   state.reports.unshift(entry);
   pushNotice(`Report submitted for ${machineId}.`, 'report');
@@ -449,6 +483,23 @@ function submitReport(machineId, reason, notes, photoDataUrl, affectStatus) {
     );
   }
   saveState();
+}
+
+// Resolve a maintenance report.  Marks the report as resolved, frees the
+// machine if it was under maintenance, and refreshes any dependent views.
+function resolveReport(reportId) {
+  const idx = state.reports.findIndex((r) => r.id === reportId);
+  if (idx === -1) return;
+  const report = state.reports[idx];
+  state.reports[idx] = { ...report, status: 'RESOLVED', resolvedAt: new Date().toLocaleString() };
+  state.machines = state.machines.map((m) =>
+    m.id === report.machineId ? { ...m, status: 'FREE', eta: undefined } : m
+  );
+  const machineLabel = state.machines.find((m) => m.id === report.machineId)?.label || report.machineId;
+  pushNotice(`Maintenance resolved for ${machineLabel}.`, 'success');
+  saveState();
+  if (typeof updateLaundryView === 'function') updateLaundryView();
+  if (typeof renderAdminBookings === 'function') renderAdminBookings();
 }
 
 // Minute-level tick handler.  Decrements ETAs, transitions RUNNING machines
@@ -638,6 +689,55 @@ function cancelBooking(id) {
   }
 }
 
+// Explicitly approve a pending booking from the admin view.  Moves the
+// request into APPROVED, updates timestamps, persists state, and refreshes
+// all related views so the booking disappears from the admin queue and is
+// visible to students as approved.
+function approveBooking(id) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = commonRoomDB.bookings[idx];
+    if (booking.status !== 'APPROVED') {
+      commonRoomDB.bookings[idx] = {
+        ...booking,
+        status: 'APPROVED',
+        updatedAt: Date.now(),
+      };
+      state.bookings = commonRoomDB.bookings;
+      pushNotice(`Booking approved for ${booking.roomLabel}.`, 'success');
+      persistCommonRoomState();
+      if (typeof renderAdminBookings === 'function') renderAdminBookings();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      if (typeof updateRoomsView === 'function') updateRoomsView();
+    }
+  }
+}
+
+// Explicitly reject a pending booking from the admin view.  Marks the
+// booking as REJECTED, persists, and refreshes the admin list and student
+// booking view so the decision is reflected everywhere.
+function rejectBooking(id) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = commonRoomDB.bookings[idx];
+    if (booking.status !== 'REJECTED') {
+      commonRoomDB.bookings[idx] = {
+        ...booking,
+        status: 'REJECTED',
+        updatedAt: Date.now(),
+      };
+      state.bookings = commonRoomDB.bookings;
+      pushNotice(`Booking rejected for ${booking.roomLabel}.`, 'error');
+      persistCommonRoomState();
+      if (typeof renderAdminBookings === 'function') renderAdminBookings();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      if (typeof updateRoomsView === 'function') updateRoomsView();
+    }
+  }
+}
+
 // Extend an existing booking by requesting a new end time.  Sets the booking
 // status back to PENDING and invokes simulated approval.  Only approved
 // bookings can be extended.
@@ -717,11 +817,14 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
 function initRoomsPage() {
   const roomsGrid = document.getElementById('rooms-grid');
   const acFilter = document.getElementById('ac-filter');
+  const hostelSelect = document.getElementById('room-hostel-select');
   function updateRoomsView() {
     roomsGrid.innerHTML = '';
     const filterAC = acFilter ? acFilter.checked : false;
+    const selectedHostel = hostelSelect ? hostelSelect.value : null;
     const now = Date.now();
     state.rooms.forEach((room) => {
+      if (selectedHostel && room.hostel && room.hostel !== selectedHostel) return;
       if (filterAC && !room.hasAC) return;
       const card = document.createElement('div');
       card.className = 'machine-card';
@@ -773,6 +876,9 @@ function initRoomsPage() {
   window.updateRoomsView = updateRoomsView;
   if (acFilter) {
     acFilter.addEventListener('change', () => updateRoomsView());
+  }
+  if (hostelSelect) {
+    hostelSelect.addEventListener('change', () => updateRoomsView());
   }
   // Initial render. A short delay ensures the layout has been parsed before inserting
   // dynamic content, which fixes an issue where the grid would not render on first load.
@@ -1046,17 +1152,28 @@ function initMyBookingsPage() {
 function initAdminBookingsPage() {
   const pendingList = document.getElementById('pending-bookings');
   const approvedList = document.getElementById('approved-bookings');
-  if (!pendingList || !approvedList) return;
+  const maintenanceList = document.getElementById('maintenance-reports');
+  const resolvedList = document.getElementById('resolved-reports');
+  if (!pendingList || !approvedList || !maintenanceList || !resolvedList) return;
+
+  const logoutBtn = document.getElementById('admin-logout');
+  if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
 
   window.renderAdminBookings = function renderAdminBookings() {
     ensureCommonRoomDb();
     pendingList.innerHTML = '';
     approvedList.innerHTML = '';
+    maintenanceList.innerHTML = '';
+    resolvedList.innerHTML = '';
     const now = Date.now();
     const pending = state.bookings.filter((b) => b.status === 'PENDING');
     const approved = state.bookings
       .filter((b) => b.status === 'APPROVED' && b.endAt > now)
       .sort((a, b) => a.startAt - b.startAt);
+    const openReports = state.reports.filter((r) => (r.status || 'OPEN') !== 'RESOLVED');
+    const closedReports = state.reports
+      .filter((r) => (r.status || 'OPEN') === 'RESOLVED')
+      .slice(0, 5);
 
     if (pending.length === 0) {
       const empty = document.createElement('p');
@@ -1102,6 +1219,65 @@ function initAdminBookingsPage() {
         info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Approved</span>`;
         row.appendChild(info);
         approvedList.appendChild(row);
+      });
+    }
+
+    if (openReports.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No open maintenance requests.';
+      maintenanceList.appendChild(empty);
+    } else {
+      openReports.forEach((r) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const machine = state.machines.find((m) => m.id === r.machineId);
+        const machineLabel = machine?.label || r.machineId;
+        info.innerHTML = `<strong>${machineLabel}</strong><span class="status">${r.reason} · ${r.createdAt}</span>`;
+        if (r.notes) {
+          const notes = document.createElement('span');
+          notes.className = 'status';
+          notes.textContent = r.notes;
+          info.appendChild(notes);
+        }
+        if (r.photoDataUrl) {
+          const photo = document.createElement('img');
+          photo.className = 'maintenance-photo';
+          photo.src = r.photoDataUrl;
+          photo.alt = 'Reported issue photo';
+          info.appendChild(photo);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'wash-actions';
+        const resolveBtn = document.createElement('button');
+        resolveBtn.textContent = 'Resolve';
+        resolveBtn.onclick = () => resolveReport(r.id);
+        actions.appendChild(resolveBtn);
+        row.appendChild(info);
+        row.appendChild(actions);
+        maintenanceList.appendChild(row);
+      });
+    }
+
+    if (closedReports.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No recently resolved requests.';
+      resolvedList.appendChild(empty);
+    } else {
+      closedReports.forEach((r) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const machine = state.machines.find((m) => m.id === r.machineId);
+        const machineLabel = machine?.label || r.machineId;
+        const resolvedAt = r.resolvedAt || 'Resolved';
+        info.innerHTML = `<strong>${machineLabel}</strong><span class="status">${r.reason} · ${resolvedAt}</span>`;
+        row.appendChild(info);
+        resolvedList.appendChild(row);
       });
     }
   };
@@ -1156,7 +1332,7 @@ function initLaundryPage() {
   // Remove any leftover debug messaging from earlier development.  We no longer
   // surface alerts on load; instead rely on proper rendering below.
 
-  // Populate hostel options (only LVH for now).  Additional hostels
+  // Populate hostel options (only WH for now).  Additional hostels
   // could be added to state.machines in the future.
   const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
   hostels.forEach((hostel) => {
@@ -1178,7 +1354,8 @@ function initLaundryPage() {
     floors.forEach((floor) => {
       const opt = document.createElement('option');
       opt.value = String(floor);
-      opt.textContent = `Floor ${floor}`;
+      const isSecondFloor = Number(floor) === 2;
+      opt.textContent = isSecondFloor ? 'Second Floor' : `Floor ${floor}`;
       floorSelect.appendChild(opt);
     });
     if (!floorSelect.value) floorSelect.value = String(floors[0]);
@@ -1716,7 +1893,7 @@ function showAuthOverlay() {
   sHeading.textContent = 'Student mode';
   const sHint = document.createElement('p');
   sHint.className = 'muted';
-  sHint.textContent = 'student@hostel.edu / student123';
+  sHint.textContent = 'subhamn2026@email.iimcal.ac.in / student123';
   const sEmail = document.createElement('input');
   sEmail.type = 'email';
   sEmail.required = true;
@@ -1816,7 +1993,7 @@ function initProfilePage() {
     form.appendChild(heading);
     const subtitle = document.createElement('p');
     subtitle.className = 'muted';
-    subtitle.textContent = 'Use student@hostel.edu / student123';
+    subtitle.textContent = 'Use subhamn2026@email.iimcal.ac.in / student123';
     form.appendChild(subtitle);
     const emailLabel = document.createElement('label');
     emailLabel.textContent = 'Academic email (Google)';
@@ -1951,7 +2128,11 @@ function initProfilePage() {
     // Avatar with Google and user icons
     const avatarDiv = document.createElement('div');
     avatarDiv.className = 'avatar';
-    avatarDiv.innerHTML = `<span class="google-icon">G</span><span class="user-icon">👤</span>`;
+    const avatarImg = document.createElement('img');
+    avatarImg.src = 'profile-avatar.svg';
+    avatarImg.alt = 'User avatar';
+    avatarImg.className = 'avatar-img';
+    avatarDiv.appendChild(avatarImg);
     infoSection.appendChild(avatarDiv);
     // Name field (fall back to email local part)
     const nameVal = state.user.name || (state.user.email ? state.user.email.split('@')[0] : '');
@@ -2020,20 +2201,21 @@ function initProfilePage() {
 // Login a user and persist to state.  Generates a simple id and records
 // email and phone number.  The role controls whether the user sees the
 // student experience or the admin approvals view.
-function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
-  const cleanedEmail = email.trim();
-  state.user = {
-    id: `${role}-${Date.now()}`,
-    role,
-    email: cleanedEmail,
-    phone: (phone || '').trim() || null,
-    hostel: role === 'student' ? DEMO_STUDENT.hostel : '',
-    room: role === 'student' ? DEMO_STUDENT.room : '',
-    name: nameOverride || cleanedEmail.split('@')[0],
-  };
-  saveState();
-  const overlay = document.getElementById('auth-overlay');
-  if (overlay) overlay.remove();
+  function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
+    const cleanedEmail = email.trim();
+    state.user = {
+      id: `${role}-${Date.now()}`,
+      role,
+      email: cleanedEmail,
+      phone: (phone || '').trim() || null,
+      hostel: role === 'student' ? DEMO_STUDENT.hostel : '',
+      room: role === 'student' ? DEMO_STUDENT.room : '',
+      name: nameOverride || cleanedEmail.split('@')[0],
+    };
+    setAuthCookie(state.user);
+    saveState();
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.remove();
   document.body.classList.remove('auth-locked');
   document.body.classList.toggle('admin-mode', role === 'admin');
   pushNotice('Logged in as ' + state.user.email, 'info');

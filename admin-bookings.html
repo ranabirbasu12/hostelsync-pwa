@@ -15,6 +15,7 @@
       <div class="cta-row">
         <a class="btn-link" href="rooms.html">Back to rooms</a>
         <a class="btn-link" href="my-bookings.html">View student requests</a>
+        <button class="btn-link" type="button" id="admin-logout">Log out</button>
       </div>
     </header>
     <main>
@@ -25,6 +26,13 @@
       <section>
         <h2>Upcoming approved</h2>
         <div id="approved-bookings" class="wash-list"></div>
+      </section>
+      <section>
+        <h2>Maintenance requests</h2>
+        <p class="muted">Student-reported washer issues that need attention.</p>
+        <div id="maintenance-reports" class="wash-list"></div>
+        <h3>Recently resolved</h3>
+        <div id="resolved-reports" class="wash-list"></div>
       </section>
     </main>
     <nav class="bottom-nav">
@@ -43,6 +51,10 @@
       <a href="alerts.html">
         <span class="icon">🔔</span>
         Alerts
+      </a>
+      <a href="leaderboard.html">
+        <span class="icon">🏆</span>
+        Leaderboard
       </a>
       <a href="profile.html">
         <span class="icon">👤</span>
