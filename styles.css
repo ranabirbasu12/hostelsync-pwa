@@ -189,6 +189,10 @@ main {
   background-color: var(--accent-color);
 }
 
+.status-booked {
+  background-color: var(--accent-color);
+}
+
 .status-awaiting {
   background-color: var(--attention-color);
 }
@@ -238,6 +242,12 @@ main {
 .machine-subtext {
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+.room-unavailable {
+  background-color: #f1f2f4;
+  color: var(--text-muted);
+  border: 1px dashed #c4c7d0;
 }
 
 .machine-status {
@@ -425,6 +435,60 @@ main {
   cursor: pointer;
 }
 
+.cta-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--border-radius);
+  background-color: #eef2ff;
+  color: var(--primary-color);
+  font-weight: 600;
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.btn-link:hover {
+  background-color: #e0e7ff;
+}
+
+.booking-availability {
+  background: #f8f9fb;
+  border: 1px solid #e5e7eb;
+  padding: 0.75rem;
+  border-radius: var(--border-radius);
+  margin-bottom: 0.75rem;
+}
+
+.booking-slot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.booking-slot-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.85rem;
+}
+
+.booking-slot-row strong {
+  color: var(--primary-color);
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
 /* Banner for all busy machines */
 .busy-banner {
   display: flex;
@@ -448,6 +512,128 @@ main {
   cursor: pointer;
 }
 
+/* Leaderboard page */
+.leaderboard-hero {
+  background: linear-gradient(135deg, #e0f2fe, #f5f3ff);
+  border: 1px solid #e2e8f0;
+  border-radius: var(--border-radius);
+  padding: 1rem;
+  box-shadow: var(--card-shadow);
+}
+
+.leaderboard-card {
+  margin-top: 1rem;
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--card-shadow);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.leaderboard-top-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.score-legend {
+  display: flex;
+  align-items: center;
+}
+
+.score-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  background-color: #e0f2fe;
+  border-radius: 999px;
+  color: var(--primary-color);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 640px;
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+  padding: 0.75rem 0.5rem;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.leaderboard-table thead th {
+  color: var(--text-muted);
+  border-bottom: 1px solid #e5e7eb;
+  font-weight: 600;
+}
+
+.leaderboard-table tbody tr {
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.leaderboard-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.leaderboard-table tbody tr:nth-child(even) {
+  background-color: #f8fafc;
+}
+
+.rank-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: var(--primary-color);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.participant {
+  display: flex;
+  flex-direction: column;
+}
+
+.participant strong {
+  font-size: 1rem;
+}
+
+.score-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  padding: 0.35rem 0.65rem;
+  background-color: #dcfce7;
+  color: #15803d;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
 /* Profile page styling */
 .profile-info {
   background-color: var(--surface-color);
@@ -456,8 +642,10 @@ main {
   box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 0.5rem;
   margin-bottom: 1rem;
+  text-align: center;
 }
 
 .profile-info .avatar {
@@ -467,14 +655,11 @@ main {
   margin-bottom: 0.5rem;
 }
 
-.profile-info .avatar .google-icon {
-  font-size: 2rem;
-  color: var(--accent-color);
-  font-weight: bold;
-}
-
-.profile-info .avatar .user-icon {
-  font-size: 2rem;
+.profile-info .avatar .avatar-img {
+  width: 84px;
+  height: 84px;
+  border-radius: 999px;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.12);
 }
 
 .profile-info p {
@@ -547,4 +732,81 @@ header .sub-text {
   color: #3b82f6;
   text-decoration: underline;
   cursor: pointer;
+}
+
+/* Authentication overlay */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 1000;
+}
+
+.auth-overlay.active {
+  display: flex;
+}
+
+.auth-card {
+  background: white;
+  border-radius: 16px;
+  padding: 1.5rem;
+  max-width: 960px;
+  width: 100%;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.15);
+}
+
+.auth-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f9fafb;
+}
+
+.auth-form input {
+  padding: 0.55rem 0.8rem;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+}
+
+.auth-form button {
+  margin-top: 0.5rem;
+  padding: 0.7rem;
+  border: none;
+  border-radius: 10px;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.auth-form button:hover {
+  background: #1d4ed8;
+}
+
+.auth-error {
+  color: #b91c1c;
+  font-size: 0.9rem;
+  min-height: 1.2rem;
+}
+
+body.auth-locked {
+  overflow: hidden;
+}
+
+body.admin-mode .bottom-nav {
+  display: none;
 }

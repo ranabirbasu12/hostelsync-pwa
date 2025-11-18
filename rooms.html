@@ -13,11 +13,19 @@
       <h1>Common Rooms</h1>
       <!-- Mode indicator for students -->
       <p class="sub-text">Student Mode</p>
+      <div class="cta-row">
+        <a class="btn-link" href="my-bookings.html">View my requests</a>
+        <a class="btn-link" href="admin-bookings.html">Admin approvals</a>
+      </div>
     </header>
     <main>
       <div class="laundry-header">
         <h2>Select Room</h2>
         <div class="selector">
+          <label for="room-hostel-select">Hostel</label>
+          <select id="room-hostel-select">
+            <option value="WH">WH</option>
+          </select>
           <label for="ac-filter">Only AC</label>
           <input type="checkbox" id="ac-filter" />
         </div>
@@ -41,6 +49,10 @@
       <a href="alerts.html">
         <span class="icon">🔔</span>
         Alerts
+      </a>
+      <a href="leaderboard.html">
+        <span class="icon">🏆</span>
+        Leaderboard
       </a>
       <a href="profile.html">
         <span class="icon">👤</span>

@@ -3,22 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Washes · HostelSync</title>
+    <title>Admin · Bookings · HostelSync</title>
     <link rel="manifest" href="manifest.json" />
     <link rel="stylesheet" href="styles.css" />
     <script defer src="script.js"></script>
   </head>
-  <body class="my-washes-page">
+  <body class="admin-bookings-page">
     <header>
-      <h1>My Washes</h1>
-      <!-- Mode indicator for students -->
-      <p class="sub-text">Student Mode</p>
+      <h1>Booking Approvals</h1>
+      <p class="sub-text">Admin Mode</p>
+      <div class="cta-row">
+        <a class="btn-link" href="rooms.html">Back to rooms</a>
+        <a class="btn-link" href="my-bookings.html">View student requests</a>
+        <button class="btn-link" type="button" id="admin-logout">Log out</button>
+      </div>
     </header>
     <main>
-      <h2>Active</h2>
-      <div id="active-washes" class="wash-list"></div>
-      <h2>History</h2>
-      <div id="wash-history" class="wash-list"></div>
+      <section>
+        <h2>Pending requests</h2>
+        <div id="pending-bookings" class="wash-list"></div>
+      </section>
+      <section>
+        <h2>Upcoming approved</h2>
+        <div id="approved-bookings" class="wash-list"></div>
+      </section>
     </main>
     <nav class="bottom-nav">
       <a href="index.html">
@@ -33,7 +41,6 @@
         <span class="icon">🚪</span>
         Rooms
       </a>
-      <!-- My Washes moved into Profile section -->
       <a href="alerts.html">
         <span class="icon">🔔</span>
         Alerts

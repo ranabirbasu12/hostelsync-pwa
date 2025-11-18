@@ -12,6 +12,21 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// Demo authentication constants
+const AUTH_COOKIE_KEY = 'hostelsync_auth';
+const DEMO_STUDENT = {
+  email: 'subhamn2026@email.iimcal.ac.in',
+  password: 'student123',
+  name: 'Shubham Naskar',
+  hostel: 'WH',
+  room: 'C307',
+};
+const DEMO_ADMIN = {
+  email: 'admin@hostel.edu',
+  password: 'admin123',
+  name: 'Admin Approver',
+};
+
 // Global error handler disabled.  Enable manually for debugging if needed.
 // window.onerror = function(message, source, lineno, colno, error) {
 //   if (!window.__errorShown) {
@@ -32,8 +47,10 @@ if ('serviceWorker' in navigator) {
 
 // Bump this number whenever the state schema or default machine setup changes.
 // Incrementing the version forces a reset of the persisted state in localStorage.
-const STATE_VERSION = 3;
+const STATE_VERSION = 5;
 let state = null;
+const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
+let commonRoomDB = null;
 
 // Global error handler (disabled in production).  In development you can
 // uncomment the following to surface errors in an alert.  The default
@@ -65,54 +82,199 @@ function saveState() {
   }
 }
 
-// Create an array of machine objects with random starting statuses.  This
-// function assumes a single hostel (LVH) with 4 floors and 5 machines per
-// floor.  Machines are labelled like M-1A, M-1B, etc.
-function makeMachines() {
-  // Generate machines for all four hostels (LVH, OH, WH, NH).  Each hostel
-  // contains 4 floors with 5 machines per floor.  Statuses are
-  // randomised for demonstration and align with the original React mock.
-  const hostels = ['LVH', 'OH', 'WH', 'NH'];
-  const machines = [];
-  hostels.forEach((hostel) => {
-    const floors = 4;
-    for (let floor = 1; floor <= floors; floor++) {
-      for (let i = 1; i <= 5; i++) {
-        const id = `${hostel}-${floor}-${i}`;
-        const label = `M-${floor}${String.fromCharCode(64 + i)}`;
-        const running = Math.random() < 0.45;
-        const awaiting = !running && Math.random() < 0.25;
-        machines.push({
-          id,
-          label,
-          hostel,
-          floor,
-          status: running ? 'RUNNING' : awaiting ? 'AWAITING' : 'FREE',
-          eta: running ? Math.floor(8 + Math.random() * 28) : undefined,
-          lastCompletedAt: awaiting
-            ? Date.now() - Math.floor(Math.random() * 1000 * 60 * 30)
-            : undefined,
-        });
-      }
-    }
-  });
-  return machines;
+// -----------------------------------------------------------------------------
+// Authentication persistence helpers
+//
+// Demo login is intentionally simple.  Credentials are validated client-side and
+// the active user is mirrored into a short-lived cookie so any page will prompt
+// once and then remember the mode (student/admin) until logout.
+function isValidDemoUser(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return user.email === DEMO_ADMIN.email;
+  if (user.role === 'student') return user.email === DEMO_STUDENT.email;
+  return false;
 }
 
-// Create a list of common rooms for booking.  Each room has an id, a
-// human-readable label and a flag indicating whether AC is available.  The
-// first half of the rooms have AC.
-function makeRooms() {
-  const rooms = [];
-  const total = 8;
-  for (let i = 1; i <= total; i++) {
-    rooms.push({
-      id: `CR-${i}`,
-      label: `Common Room ${i}`,
-      hasAC: i <= total / 2,
-    });
+function setAuthCookie(user) {
+  if (!user) return;
+  const payload = {
+    id: user.id,
+    role: user.role,
+    email: user.email,
+    phone: user.phone || null,
+    name: user.name || null,
+  };
+  const encoded = encodeURIComponent(JSON.stringify(payload));
+  document.cookie = `${AUTH_COOKIE_KEY}=${encoded}; path=/; max-age=${60 * 60 * 24 * 30}`;
+}
+
+function readAuthCookie() {
+  const raw = document.cookie || '';
+  const cookies = raw.split(';');
+  for (const cookie of cookies) {
+    const trimmed = cookie.trim();
+    if (!trimmed.startsWith(`${AUTH_COOKIE_KEY}=`)) continue;
+    try {
+      const value = decodeURIComponent(trimmed.split('=').slice(1).join('='));
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
   }
-  return rooms;
+  return null;
+}
+
+function clearAuthCookie() {
+  document.cookie = `${AUTH_COOKIE_KEY}=; path=/; max-age=0`;
+}
+
+function syncUserFromCookie() {
+  const cookieUser = readAuthCookie();
+  if (!cookieUser || !isValidDemoUser(cookieUser)) {
+    clearAuthCookie();
+    if (state) {
+      state.user = null;
+      saveState();
+    }
+    return;
+  }
+  state.user = {
+    id: cookieUser.id || `${cookieUser.role}-${Date.now()}`,
+    role: cookieUser.role,
+    email: cookieUser.email,
+    phone: cookieUser.phone || null,
+    hostel: cookieUser.role === 'student' ? DEMO_STUDENT.hostel : '',
+    room: cookieUser.role === 'student' ? DEMO_STUDENT.room : '',
+    name: cookieUser.name || (cookieUser.email ? cookieUser.email.split('@')[0] : ''),
+  };
+  saveState();
+}
+
+// Create an array of machine objects for the single supported hostel/floor.
+// The current deployment focuses solely on Hostel WH, second floor, with
+// three fully functional machines.  Machines are labelled M-2A, M-2B, M-2C
+// to match the second-floor context.
+function makeMachines() {
+  return [
+    {
+      id: 'WH-2-1',
+      label: 'M-2A',
+      hostel: 'WH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+    {
+      id: 'WH-2-2',
+      label: 'M-2B',
+      hostel: 'WH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+    {
+      id: 'WH-2-3',
+      label: 'M-2C',
+      hostel: 'WH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+  ];
+}
+
+// Create a list of common rooms for booking.  Each room has an id, hostel,
+// human-readable label and a flag indicating whether AC is available.  All
+// rooms live in WH for this deployment and have AC by default.
+function makeRooms() {
+  return [
+    {
+      id: 'WH-pool',
+      hostel: 'WH',
+      label: 'Pool Room',
+      hasAC: true,
+    },
+    {
+      id: 'WH-lan',
+      hostel: 'WH',
+      label: 'LAN Room',
+      hasAC: true,
+    },
+    {
+      id: 'WH-tt',
+      hostel: 'WH',
+      label: 'Table Tennis Room',
+      hasAC: true,
+    },
+  ];
+}
+
+// -----------------------------------------------------------------------------
+// Common room database helpers
+//
+// The common room booking experience needs persistent storage that is decoupled
+// from the broader laundry/game state.  We keep a lightweight “database” in
+// localStorage so bookings and the room catalog survive resets and can be
+// reused across pages.
+
+// Load the common room database from localStorage.  If the payload is missing
+// or invalid, null is returned so the caller can seed defaults.
+function loadCommonRoomDb() {
+  const data = localStorage.getItem(COMMON_ROOM_DB_KEY);
+  if (data) {
+    try {
+      const parsed = JSON.parse(data);
+      if (!parsed.rooms || !Array.isArray(parsed.rooms)) return null;
+      if (!parsed.bookings || !Array.isArray(parsed.bookings)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Persist the current database snapshot.
+function saveCommonRoomDb() {
+  if (commonRoomDB) {
+    localStorage.setItem(COMMON_ROOM_DB_KEY, JSON.stringify(commonRoomDB));
+  }
+}
+
+// Ensure the in-memory database is present.  Optionally reset to defaults when
+// the state schema is reset.
+function initCommonRoomDb(forceReset = false) {
+  if (!forceReset) {
+    const loaded = loadCommonRoomDb();
+    if (loaded) {
+      commonRoomDB = loaded;
+    }
+  }
+  if (!commonRoomDB || forceReset) {
+    commonRoomDB = {
+      rooms:
+        state && Array.isArray(state.rooms) && state.rooms.length > 0
+          ? state.rooms
+          : makeRooms(),
+      bookings: state && Array.isArray(state.bookings) ? state.bookings : [],
+    };
+  }
+  state.rooms = commonRoomDB.rooms;
+  state.bookings = commonRoomDB.bookings;
+  saveCommonRoomDb();
+}
+
+// Keep the backing database and app state aligned after any mutation.
+function persistCommonRoomState() {
+  if (!commonRoomDB) initCommonRoomDb(false);
+  commonRoomDB.rooms = state.rooms;
+  commonRoomDB.bookings = state.bookings;
+  saveCommonRoomDb();
+  saveState();
+}
+
+function ensureCommonRoomDb() {
+  if (!commonRoomDB) initCommonRoomDb(false);
 }
 
 // Initialise state if none exists.  We seed machines with random data and
@@ -131,12 +293,7 @@ function initState() {
     state.version !== STATE_VERSION ||
     !state.machines ||
     state.machines.length === 0 ||
-    state.machines.some((m) => !validStatuses.includes(m.status)) ||
-    !state.rooms ||
-    !Array.isArray(state.rooms) ||
-    state.rooms.length === 0 ||
-    !state.bookings ||
-    !Array.isArray(state.bookings);
+    state.machines.some((m) => !validStatuses.includes(m.status));
 
   if (needsReset) {
     state = {
@@ -154,7 +311,6 @@ function initState() {
       // CANCELLED.
       rooms: makeRooms(),
       bookings: [],
-      user: null,
     };
     // Initialise watchFree flags for all hostels and floors present in machines.
     const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
@@ -167,8 +323,10 @@ function initState() {
         state.watchFree[hostel][floor] = false;
       });
     });
-    saveState();
   }
+  initCommonRoomDb(needsReset);
+  syncUserFromCookie();
+  saveState();
 }
 
 // Push a notification into the notice list.  If the Web Notifications API is
@@ -419,7 +577,8 @@ function computeCounts(machines) {
 // after an existing booking’s start, and the existing booking is either
 // pending or approved.
 function checkConflict(roomId, startAt, endAt) {
-  return state.bookings.some((b) => {
+  ensureCommonRoomDb();
+  return commonRoomDB.bookings.some((b) => {
     if (b.roomId !== roomId) return false;
     // Only consider bookings that are active or awaiting approval
     if (b.status === 'CANCELLED' || b.status === 'REJECTED') return false;
@@ -430,6 +589,7 @@ function checkConflict(roomId, startAt, endAt) {
 // Submit a new booking request.  Adds a booking with status PENDING to
 // state.bookings, notifies the user and schedules a simulated approval.
 function submitBooking(room, startAt, endAt, reason) {
+  ensureCommonRoomDb();
   const booking = {
     id: `b-${Date.now()}`,
     roomId: room.id,
@@ -442,9 +602,10 @@ function submitBooking(room, startAt, endAt, reason) {
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
-  state.bookings.unshift(booking);
+  commonRoomDB.bookings.unshift(booking);
+  state.bookings = commonRoomDB.bookings;
   pushNotice(`Request submitted for ${room.label}.`, 'info');
-  saveState();
+  persistCommonRoomState();
   simulateApproval(booking.id);
   // update bookings view if present
   if (typeof renderMyBookings === 'function') renderMyBookings();
@@ -456,20 +617,22 @@ function submitBooking(room, startAt, endAt, reason) {
 // would involve server-side logic and admin interaction.
 function simulateApproval(bookingId) {
   setTimeout(() => {
-    const idx = state.bookings.findIndex((b) => b.id === bookingId);
+    ensureCommonRoomDb();
+    const idx = commonRoomDB.bookings.findIndex((b) => b.id === bookingId);
     if (idx >= 0) {
-      const booking = state.bookings[idx];
+      const booking = commonRoomDB.bookings[idx];
       if (booking.status === 'PENDING') {
-        state.bookings[idx] = {
+        commonRoomDB.bookings[idx] = {
           ...booking,
           status: 'APPROVED',
           updatedAt: Date.now(),
         };
+        state.bookings = commonRoomDB.bookings;
         pushNotice(
           `Booking approved for ${booking.roomLabel}. Please keep the room clean and tidy.`,
           'success'
         );
-        saveState();
+        persistCommonRoomState();
         if (typeof renderMyBookings === 'function') renderMyBookings();
         if (typeof updateRoomsView === 'function') updateRoomsView();
       }
@@ -480,17 +643,68 @@ function simulateApproval(bookingId) {
 // Cancel an existing booking.  Changes status to CANCELLED and notifies
 // the user.  Only bookings in PENDING or APPROVED state can be cancelled.
 function cancelBooking(id) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         status: 'CANCELLED',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking cancelled for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      if (typeof updateRoomsView === 'function') updateRoomsView();
+    }
+  }
+}
+
+// Explicitly approve a pending booking from the admin view.  Moves the
+// request into APPROVED, updates timestamps, persists state, and refreshes
+// all related views so the booking disappears from the admin queue and is
+// visible to students as approved.
+function approveBooking(id) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = commonRoomDB.bookings[idx];
+    if (booking.status !== 'APPROVED') {
+      commonRoomDB.bookings[idx] = {
+        ...booking,
+        status: 'APPROVED',
+        updatedAt: Date.now(),
+      };
+      state.bookings = commonRoomDB.bookings;
+      pushNotice(`Booking approved for ${booking.roomLabel}.`, 'success');
+      persistCommonRoomState();
+      if (typeof renderAdminBookings === 'function') renderAdminBookings();
+      if (typeof renderMyBookings === 'function') renderMyBookings();
+      if (typeof updateRoomsView === 'function') updateRoomsView();
+    }
+  }
+}
+
+// Explicitly reject a pending booking from the admin view.  Marks the
+// booking as REJECTED, persists, and refreshes the admin list and student
+// booking view so the decision is reflected everywhere.
+function rejectBooking(id) {
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
+  if (idx >= 0) {
+    const booking = commonRoomDB.bookings[idx];
+    if (booking.status !== 'REJECTED') {
+      commonRoomDB.bookings[idx] = {
+        ...booking,
+        status: 'REJECTED',
+        updatedAt: Date.now(),
+      };
+      state.bookings = commonRoomDB.bookings;
+      pushNotice(`Booking rejected for ${booking.roomLabel}.`, 'error');
+      persistCommonRoomState();
+      if (typeof renderAdminBookings === 'function') renderAdminBookings();
       if (typeof renderMyBookings === 'function') renderMyBookings();
       if (typeof updateRoomsView === 'function') updateRoomsView();
     }
@@ -501,9 +715,10 @@ function cancelBooking(id) {
 // status back to PENDING and invokes simulated approval.  Only approved
 // bookings can be extended.
 function extendBooking(id, newEndAt) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'APPROVED') {
       // check that the extension does not exceed 24 hours and does not
       // conflict with other bookings
@@ -516,16 +731,16 @@ function extendBooking(id, newEndAt) {
         alert('Requested extension overlaps with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         endAt: newEndAt,
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Extension requested for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
-      simulateApproval(booking.id);
     }
   }
 }
@@ -534,9 +749,10 @@ function extendBooking(id, newEndAt) {
 // optionally a new reason.  The booking returns to PENDING status pending
 // approval.  Only pending or approved bookings can be modified.
 function modifyBooking(id, newStartAt, newEndAt, newReason) {
-  const idx = state.bookings.findIndex((b) => b.id === id);
+  ensureCommonRoomDb();
+  const idx = commonRoomDB.bookings.findIndex((b) => b.id === id);
   if (idx >= 0) {
-    const booking = state.bookings[idx];
+    const booking = commonRoomDB.bookings[idx];
     if (booking.status === 'PENDING' || booking.status === 'APPROVED') {
       const diff = newEndAt - newStartAt;
       if (diff <= 0) {
@@ -551,7 +767,7 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         alert('Requested times overlap with another booking.');
         return;
       }
-      state.bookings[idx] = {
+      commonRoomDB.bookings[idx] = {
         ...booking,
         startAt: newStartAt,
         endAt: newEndAt,
@@ -559,10 +775,11 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
         status: 'PENDING',
         updatedAt: Date.now(),
       };
+      state.bookings = commonRoomDB.bookings;
       pushNotice(`Booking modified for ${booking.roomLabel}.`, 'info');
-      saveState();
+      persistCommonRoomState();
       if (typeof renderMyBookings === 'function') renderMyBookings();
-      simulateApproval(booking.id);
+      if (typeof updateRoomsView === 'function') updateRoomsView();
     }
   }
 }
@@ -573,11 +790,14 @@ function modifyBooking(id, newStartAt, newEndAt, newReason) {
 function initRoomsPage() {
   const roomsGrid = document.getElementById('rooms-grid');
   const acFilter = document.getElementById('ac-filter');
+  const hostelSelect = document.getElementById('room-hostel-select');
   function updateRoomsView() {
     roomsGrid.innerHTML = '';
     const filterAC = acFilter ? acFilter.checked : false;
+    const selectedHostel = hostelSelect ? hostelSelect.value : null;
     const now = Date.now();
     state.rooms.forEach((room) => {
+      if (selectedHostel && room.hostel && room.hostel !== selectedHostel) return;
       if (filterAC && !room.hasAC) return;
       const card = document.createElement('div');
       card.className = 'machine-card';
@@ -612,10 +832,11 @@ function initRoomsPage() {
         chip.classList.add('status-free');
         chip.textContent = 'Free';
       } else {
-        chip.classList.add('status-running');
+        chip.classList.add('status-booked');
         // Show booking end time for clarity
         const endDate = new Date(currentBooking.endAt);
         chip.textContent = `Booked until ${endDate.toLocaleTimeString()}`;
+        card.classList.add('room-unavailable');
       }
       card.appendChild(chip);
       // Click handler to open booking modal
@@ -628,6 +849,9 @@ function initRoomsPage() {
   window.updateRoomsView = updateRoomsView;
   if (acFilter) {
     acFilter.addEventListener('change', () => updateRoomsView());
+  }
+  if (hostelSelect) {
+    hostelSelect.addEventListener('change', () => updateRoomsView());
   }
   // Initial render. A short delay ensures the layout has been parsed before inserting
   // dynamic content, which fixes an issue where the grid would not render on first load.
@@ -654,6 +878,34 @@ function openRoomModal(room) {
   const title = document.createElement('h3');
   title.textContent = room.label + (room.hasAC ? ' (AC)' : '');
   modal.appendChild(title);
+  // Existing bookings section
+  const existingBlock = document.createElement('div');
+  existingBlock.className = 'booking-availability';
+  const existingTitle = document.createElement('h4');
+  existingTitle.textContent = 'Booked slots';
+  existingBlock.appendChild(existingTitle);
+  const bookingsList = document.createElement('div');
+  bookingsList.className = 'booking-slot-list';
+  const upcoming = state.bookings
+    .filter((b) => b.roomId === room.id && (b.status === 'APPROVED' || b.status === 'PENDING'))
+    .sort((a, b) => a.startAt - b.startAt);
+  if (upcoming.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No upcoming bookings yet.';
+    bookingsList.appendChild(empty);
+  } else {
+    upcoming.forEach((b) => {
+      const row = document.createElement('div');
+      row.className = 'booking-slot-row';
+      const time = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+      const status = b.status === 'PENDING' ? 'Pending approval' : 'Approved';
+      row.innerHTML = `<strong>${status}</strong><span>${time}</span>`;
+      bookingsList.appendChild(row);
+    });
+  }
+  existingBlock.appendChild(bookingsList);
+  modal.appendChild(existingBlock);
   // Date input
   const dateLabel = document.createElement('label');
   dateLabel.textContent = 'Date';
@@ -744,7 +996,7 @@ function openRoomModal(room) {
     const startTimestamp = startAt.getTime();
     const endTimestamp = endAt.getTime();
     if (checkConflict(room.id, startTimestamp, endTimestamp)) {
-      alert('This room is not available for the selected times.');
+      alert('This room is not available for the selected times. Please choose another slot.');
       return;
     }
     if (!reason) {
@@ -868,6 +1120,77 @@ function initMyBookingsPage() {
   setTimeout(() => renderMyBookings(), 0);
 }
 
+// Admin view for booking approvals. This page lists pending requests with
+// approve/reject actions and shows upcoming approved bookings for awareness.
+function initAdminBookingsPage() {
+  const pendingList = document.getElementById('pending-bookings');
+  const approvedList = document.getElementById('approved-bookings');
+  if (!pendingList || !approvedList) return;
+
+  const logoutBtn = document.getElementById('admin-logout');
+  if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
+
+  window.renderAdminBookings = function renderAdminBookings() {
+    ensureCommonRoomDb();
+    pendingList.innerHTML = '';
+    approvedList.innerHTML = '';
+    const now = Date.now();
+    const pending = state.bookings.filter((b) => b.status === 'PENDING');
+    const approved = state.bookings
+      .filter((b) => b.status === 'APPROVED' && b.endAt > now)
+      .sort((a, b) => a.startAt - b.startAt);
+
+    if (pending.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No pending requests.';
+      pendingList.appendChild(empty);
+    } else {
+      pending.forEach((b) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const times = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+        info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Reason: ${b.reason}</span>`;
+        const actions = document.createElement('div');
+        actions.className = 'wash-actions';
+        const approveBtn = document.createElement('button');
+        approveBtn.textContent = 'Approve';
+        approveBtn.onclick = () => approveBooking(b.id);
+        const rejectBtn = document.createElement('button');
+        rejectBtn.textContent = 'Reject';
+        rejectBtn.onclick = () => rejectBooking(b.id);
+        actions.appendChild(approveBtn);
+        actions.appendChild(rejectBtn);
+        row.appendChild(info);
+        row.appendChild(actions);
+        pendingList.appendChild(row);
+      });
+    }
+
+    if (approved.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No upcoming approved bookings.';
+      approvedList.appendChild(empty);
+    } else {
+      approved.forEach((b) => {
+        const row = document.createElement('div');
+        row.className = 'wash-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const times = `${new Date(b.startAt).toLocaleString()} → ${new Date(b.endAt).toLocaleTimeString()}`;
+        info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Approved</span>`;
+        row.appendChild(info);
+        approvedList.appendChild(row);
+      });
+    }
+  };
+
+  setTimeout(() => renderAdminBookings(), 0);
+}
+
 // On DOM ready we initialise state and start the tick.  Then we detect
 // which page we are on by body class and call the appropriate initialiser.
 document.addEventListener('DOMContentLoaded', () => {
@@ -875,7 +1198,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // present any debug alerts in production.  Previous debug alerts have been
   // removed.
   initState();
+  const canProceed = ensureAuthMode();
   startTick();
+  if (!canProceed) return;
   const bodyClass = document.body.classList;
   if (bodyClass.contains('laundry-page')) {
     initLaundryPage();
@@ -887,6 +1212,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initRoomsPage();
   } else if (bodyClass.contains('my-bookings-page')) {
     initMyBookingsPage();
+  } else if (bodyClass.contains('admin-bookings-page')) {
+    initAdminBookingsPage();
   } else if (bodyClass.contains('profile-page')) {
     initProfilePage();
   } else if (bodyClass.contains('home-page')) {
@@ -911,7 +1238,7 @@ function initLaundryPage() {
   // Remove any leftover debug messaging from earlier development.  We no longer
   // surface alerts on load; instead rely on proper rendering below.
 
-  // Populate hostel options (only LVH for now).  Additional hostels
+  // Populate hostel options (only WH for now).  Additional hostels
   // could be added to state.machines in the future.
   const hostels = Array.from(new Set(state.machines.map((m) => m.hostel)));
   hostels.forEach((hostel) => {
@@ -933,7 +1260,8 @@ function initLaundryPage() {
     floors.forEach((floor) => {
       const opt = document.createElement('option');
       opt.value = String(floor);
-      opt.textContent = `Floor ${floor}`;
+      const isSecondFloor = Number(floor) === 2;
+      opt.textContent = isSecondFloor ? 'Second Floor' : `Floor ${floor}`;
       floorSelect.appendChild(opt);
     });
     if (!floorSelect.value) floorSelect.value = String(floors[0]);
@@ -1407,6 +1735,152 @@ function initAlertsPage() {
   renderAlerts();
 }
 
+// -----------------------------------------------------------------------------
+// Authentication overlay
+//
+// A lightweight, client-side gate that prompts for the demo student/admin
+// credentials before the rest of the UI is shown.  Only the provided demo
+// accounts are accepted.
+function ensureAuthMode() {
+  const body = document.body;
+  const onAdminPage = body.classList.contains('admin-bookings-page');
+  const validPersisted =
+    state.user &&
+    ((state.user.role === 'admin' && state.user.email === DEMO_ADMIN.email) ||
+      (state.user.role === 'student' && state.user.email === DEMO_STUDENT.email));
+
+  if (!validPersisted) {
+    state.user = null;
+    saveState();
+  }
+  if (!state.user) {
+    body.classList.add('auth-locked');
+    showAuthOverlay();
+    return false;
+  }
+  const isAdmin = state.user.role === 'admin';
+  body.classList.toggle('admin-mode', isAdmin);
+  if (isAdmin && !onAdminPage) {
+    window.location.href = 'admin-bookings.html';
+    return false;
+  }
+  if (!isAdmin && onAdminPage) {
+    window.location.href = 'rooms.html';
+    return false;
+  }
+  return true;
+}
+
+function showAuthOverlay() {
+  let overlay = document.getElementById('auth-overlay');
+  if (overlay) {
+    overlay.classList.add('active');
+    return overlay;
+  }
+  overlay = document.createElement('div');
+  overlay.id = 'auth-overlay';
+  overlay.className = 'auth-overlay active';
+  const card = document.createElement('div');
+  card.className = 'auth-card';
+  const title = document.createElement('h2');
+  title.textContent = 'Log in to continue';
+  const helper = document.createElement('p');
+  helper.className = 'muted';
+  helper.textContent = 'Use the demo accounts below to view student or admin mode.';
+  card.appendChild(title);
+  card.appendChild(helper);
+
+  const formsWrapper = document.createElement('div');
+  formsWrapper.className = 'auth-columns';
+
+  const studentForm = document.createElement('form');
+  studentForm.className = 'auth-form';
+  const sHeading = document.createElement('h3');
+  sHeading.textContent = 'Student mode';
+  const sHint = document.createElement('p');
+  sHint.className = 'muted';
+  sHint.textContent = 'subhamn2026@email.iimcal.ac.in / student123';
+  const sEmail = document.createElement('input');
+  sEmail.type = 'email';
+  sEmail.required = true;
+  sEmail.value = DEMO_STUDENT.email;
+  sEmail.placeholder = DEMO_STUDENT.email;
+  const sPass = document.createElement('input');
+  sPass.type = 'password';
+  sPass.required = true;
+  sPass.value = DEMO_STUDENT.password;
+  const sError = document.createElement('div');
+  sError.className = 'auth-error';
+  const sSubmit = document.createElement('button');
+  sSubmit.type = 'submit';
+  sSubmit.textContent = 'Enter student mode';
+  studentForm.appendChild(sHeading);
+  studentForm.appendChild(sHint);
+  studentForm.appendChild(sEmail);
+  studentForm.appendChild(sPass);
+  studentForm.appendChild(sError);
+  studentForm.appendChild(sSubmit);
+  studentForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const valid =
+      sEmail.value.trim().toLowerCase() === DEMO_STUDENT.email && sPass.value === DEMO_STUDENT.password;
+    if (!valid) {
+      sError.textContent = 'Use the provided student credentials to continue.';
+      return;
+    }
+    sError.textContent = '';
+    loginUser(DEMO_STUDENT.email, '', 'student', DEMO_STUDENT.name, {
+      redirectTo: window.location.pathname.split('/').pop() || 'index.html',
+    });
+  });
+
+  const adminForm = document.createElement('form');
+  adminForm.className = 'auth-form';
+  const aHeading = document.createElement('h3');
+  aHeading.textContent = 'Admin mode';
+  const aHint = document.createElement('p');
+  aHint.className = 'muted';
+  aHint.textContent = 'admin@hostel.edu / admin123';
+  const aEmail = document.createElement('input');
+  aEmail.type = 'email';
+  aEmail.required = true;
+  aEmail.value = DEMO_ADMIN.email;
+  aEmail.placeholder = DEMO_ADMIN.email;
+  const aPass = document.createElement('input');
+  aPass.type = 'password';
+  aPass.required = true;
+  aPass.value = DEMO_ADMIN.password;
+  const aError = document.createElement('div');
+  aError.className = 'auth-error';
+  const aSubmit = document.createElement('button');
+  aSubmit.type = 'submit';
+  aSubmit.textContent = 'Enter admin approvals';
+  adminForm.appendChild(aHeading);
+  adminForm.appendChild(aHint);
+  adminForm.appendChild(aEmail);
+  adminForm.appendChild(aPass);
+  adminForm.appendChild(aError);
+  adminForm.appendChild(aSubmit);
+  adminForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const valid =
+      aEmail.value.trim().toLowerCase() === DEMO_ADMIN.email && aPass.value === DEMO_ADMIN.password;
+    if (!valid) {
+      aError.textContent = 'Use the provided admin credentials to continue.';
+      return;
+    }
+    aError.textContent = '';
+    loginUser(DEMO_ADMIN.email, '', 'admin', DEMO_ADMIN.name, { redirectTo: 'admin-bookings.html' });
+  });
+
+  formsWrapper.appendChild(studentForm);
+  formsWrapper.appendChild(adminForm);
+  card.appendChild(formsWrapper);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
 // Initialise the profile page.  If a user is logged in (state.user), show
 // their details and allow updating contact info or logging out.  If no
 // user is logged in, display a simple login form that collects an email
@@ -1417,12 +1891,16 @@ function initProfilePage() {
   if (!container) return;
   container.innerHTML = '';
   if (!state.user) {
-    // Not logged in: show login form
+    // Not logged in: show login form with demo credentials
     const form = document.createElement('form');
     form.className = 'profile-form';
     const heading = document.createElement('h2');
-    heading.textContent = 'Sign in with Google';
+    heading.textContent = 'Student login';
     form.appendChild(heading);
+    const subtitle = document.createElement('p');
+    subtitle.className = 'muted';
+    subtitle.textContent = 'Use subhamn2026@email.iimcal.ac.in / student123';
+    form.appendChild(subtitle);
     const emailLabel = document.createElement('label');
     emailLabel.textContent = 'Academic email (Google)';
     emailLabel.setAttribute('for', 'login-email');
@@ -1431,8 +1909,17 @@ function initProfilePage() {
     emailInput.type = 'email';
     emailInput.id = 'login-email';
     emailInput.required = true;
-    emailInput.placeholder = 'you@iimcal.ac.in';
+    emailInput.placeholder = DEMO_STUDENT.email;
+    emailInput.value = DEMO_STUDENT.email;
     form.appendChild(emailInput);
+    const passLabel = document.createElement('label');
+    passLabel.textContent = 'Password';
+    form.appendChild(passLabel);
+    const passInput = document.createElement('input');
+    passInput.type = 'password';
+    passInput.required = true;
+    passInput.value = DEMO_STUDENT.password;
+    form.appendChild(passInput);
     const phoneLabel = document.createElement('label');
     phoneLabel.textContent = 'Phone / WhatsApp (optional)';
     phoneLabel.setAttribute('for', 'login-phone');
@@ -1442,16 +1929,26 @@ function initProfilePage() {
     phoneInput.id = 'login-phone';
     phoneInput.placeholder = '+91 9876543210';
     form.appendChild(phoneInput);
+    const errorMsg = document.createElement('div');
+    errorMsg.className = 'auth-error';
+    form.appendChild(errorMsg);
     const submitBtn = document.createElement('button');
     submitBtn.type = 'submit';
     submitBtn.textContent = 'Sign in';
     form.appendChild(submitBtn);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const email = emailInput.value.trim();
-      if (!email) return;
+      const email = emailInput.value.trim().toLowerCase();
+      const password = passInput.value;
+      if (email !== DEMO_STUDENT.email || password !== DEMO_STUDENT.password) {
+        errorMsg.textContent = 'Use the provided student credentials.';
+        return;
+      }
       const phone = phoneInput.value.trim();
-      loginUser(email, phone);
+      errorMsg.textContent = '';
+      loginUser(DEMO_STUDENT.email, phone, 'student', DEMO_STUDENT.name, {
+        redirectTo: 'index.html',
+      });
     });
     // Append the student login form to the container
     container.appendChild(form);
@@ -1474,13 +1971,18 @@ function initProfilePage() {
       const h = document.createElement('h2');
       h.textContent = 'Admin login';
       aForm.appendChild(h);
+      const hint = document.createElement('p');
+      hint.className = 'muted';
+      hint.textContent = 'Use admin@hostel.edu / admin123';
+      aForm.appendChild(hint);
       // Admin email field
       const aEmailLabel = document.createElement('label');
       aEmailLabel.textContent = 'Admin email';
       aForm.appendChild(aEmailLabel);
       const aEmailInput = document.createElement('input');
       aEmailInput.type = 'email';
-      aEmailInput.placeholder = 'admin@example.com';
+      aEmailInput.placeholder = DEMO_ADMIN.email;
+      aEmailInput.value = DEMO_ADMIN.email;
       aForm.appendChild(aEmailInput);
       // Admin password field
       const aPassLabel = document.createElement('label');
@@ -1488,7 +1990,11 @@ function initProfilePage() {
       aForm.appendChild(aPassLabel);
       const aPassInput = document.createElement('input');
       aPassInput.type = 'password';
+      aPassInput.value = DEMO_ADMIN.password;
       aForm.appendChild(aPassInput);
+      const aError = document.createElement('div');
+      aError.className = 'auth-error';
+      aForm.appendChild(aError);
       // Submit button for admin login
       const aSubmit = document.createElement('button');
       aSubmit.type = 'submit';
@@ -1499,10 +2005,16 @@ function initProfilePage() {
       backP.className = 'admin-link';
       backP.innerHTML = '<a href="#">Back to student login</a>';
       aForm.appendChild(backP);
-      // On admin form submit, simply show a notice (no real auth)
       aForm.addEventListener('submit', (evt) => {
         evt.preventDefault();
-        pushNotice('Admin login is not implemented in this demo.', 'warning');
+        const emailVal = aEmailInput.value.trim().toLowerCase();
+        const passVal = aPassInput.value;
+        if (emailVal !== DEMO_ADMIN.email || passVal !== DEMO_ADMIN.password) {
+          aError.textContent = 'Use the provided admin credentials.';
+          return;
+        }
+        aError.textContent = '';
+        loginUser(DEMO_ADMIN.email, '', 'admin', DEMO_ADMIN.name, { redirectTo: 'admin-bookings.html' });
       });
       // On back link click, re-render student login page
       backP.querySelector('a').addEventListener('click', (evt2) => {
@@ -1522,7 +2034,11 @@ function initProfilePage() {
     // Avatar with Google and user icons
     const avatarDiv = document.createElement('div');
     avatarDiv.className = 'avatar';
-    avatarDiv.innerHTML = `<span class="google-icon">G</span><span class="user-icon">👤</span>`;
+    const avatarImg = document.createElement('img');
+    avatarImg.src = 'profile-avatar.svg';
+    avatarImg.alt = 'User avatar';
+    avatarImg.className = 'avatar-img';
+    avatarDiv.appendChild(avatarImg);
     infoSection.appendChild(avatarDiv);
     // Name field (fall back to email local part)
     const nameVal = state.user.name || (state.user.email ? state.user.email.split('@')[0] : '');
@@ -1589,28 +2105,29 @@ function initProfilePage() {
 }
 
 // Login a user and persist to state.  Generates a simple id and records
-// email and phone number.  Users are always students in this version.  A
-// real implementation would integrate Google sign‑in here.
-function loginUser(email, phone) {
-  // When a user signs in we capture their contact details.  We also
-  // provide default hostel and room for demonstration purposes.  In a
-  // full deployment these could be loaded from the campus directory or
-  // prompted from the user at first login.
-  state.user = {
-    id: 'u-' + Date.now(),
-    role: 'student',
-    email: email.trim(),
-    phone: phone.trim() || null,
-    // Default values for hostel and room; update these as appropriate
-    hostel: 'LVH',
-    room: '188',
-    // Derive a simple name from the email by taking the part before the @
-    name: email.trim().split('@')[0]
-  };
-  saveState();
+// email and phone number.  The role controls whether the user sees the
+// student experience or the admin approvals view.
+  function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
+    const cleanedEmail = email.trim();
+    state.user = {
+      id: `${role}-${Date.now()}`,
+      role,
+      email: cleanedEmail,
+      phone: (phone || '').trim() || null,
+      hostel: role === 'student' ? DEMO_STUDENT.hostel : '',
+      room: role === 'student' ? DEMO_STUDENT.room : '',
+      name: nameOverride || cleanedEmail.split('@')[0],
+    };
+    setAuthCookie(state.user);
+    saveState();
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.remove();
+  document.body.classList.remove('auth-locked');
+  document.body.classList.toggle('admin-mode', role === 'admin');
   pushNotice('Logged in as ' + state.user.email, 'info');
-  // Redirect back to home or previous page
-  window.location.href = 'index.html';
+  const redirectTarget =
+    options.redirectTo || (role === 'admin' ? 'admin-bookings.html' : window.location.pathname.split('/').pop() || 'index.html');
+  window.location.href = redirectTarget;
 }
 
 // Update the logged in user's contact number and save.
@@ -1625,6 +2142,7 @@ function updateUserContact(phone) {
 function logoutUser() {
   state.user = null;
   saveState();
+  clearAuthCookie();
   pushNotice('Logged out', 'info');
   window.location.href = 'index.html';
 }
