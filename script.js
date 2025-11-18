@@ -324,10 +324,6 @@ function initState() {
       });
     });
   }
-  // Ensure existing reports carry a status for admin workflows
-  if (state && Array.isArray(state.reports)) {
-    state.reports = state.reports.map((r) => (r.status ? r : { ...r, status: 'OPEN' }));
-  }
   initCommonRoomDb(needsReset);
   syncUserFromCookie();
   saveState();
@@ -468,7 +464,6 @@ function submitReport(machineId, reason, notes, photoDataUrl, affectStatus) {
     notes,
     photoDataUrl,
     createdAt: new Date().toLocaleString(),
-    status: 'OPEN',
   };
   state.reports.unshift(entry);
   pushNotice(`Report submitted for ${machineId}.`, 'report');
@@ -478,23 +473,6 @@ function submitReport(machineId, reason, notes, photoDataUrl, affectStatus) {
     );
   }
   saveState();
-}
-
-// Resolve a maintenance report.  Marks the report as resolved, frees the
-// machine if it was under maintenance, and refreshes any dependent views.
-function resolveReport(reportId) {
-  const idx = state.reports.findIndex((r) => r.id === reportId);
-  if (idx === -1) return;
-  const report = state.reports[idx];
-  state.reports[idx] = { ...report, status: 'RESOLVED', resolvedAt: new Date().toLocaleString() };
-  state.machines = state.machines.map((m) =>
-    m.id === report.machineId ? { ...m, status: 'FREE', eta: undefined } : m
-  );
-  const machineLabel = state.machines.find((m) => m.id === report.machineId)?.label || report.machineId;
-  pushNotice(`Maintenance resolved for ${machineLabel}.`, 'success');
-  saveState();
-  if (typeof updateLaundryView === 'function') updateLaundryView();
-  if (typeof renderAdminBookings === 'function') renderAdminBookings();
 }
 
 // Minute-level tick handler.  Decrements ETAs, transitions RUNNING machines
@@ -1147,12 +1125,7 @@ function initMyBookingsPage() {
 function initAdminBookingsPage() {
   const pendingList = document.getElementById('pending-bookings');
   const approvedList = document.getElementById('approved-bookings');
-  const maintenanceList = document.getElementById('maintenance-reports');
-  const resolvedList = document.getElementById('resolved-reports');
-  if (!pendingList || !approvedList || !maintenanceList || !resolvedList) return;
-
-  const logoutBtn = document.getElementById('admin-logout');
-  if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
+  if (!pendingList || !approvedList) return;
 
   const logoutBtn = document.getElementById('admin-logout');
   if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
@@ -1161,17 +1134,11 @@ function initAdminBookingsPage() {
     ensureCommonRoomDb();
     pendingList.innerHTML = '';
     approvedList.innerHTML = '';
-    maintenanceList.innerHTML = '';
-    resolvedList.innerHTML = '';
     const now = Date.now();
     const pending = state.bookings.filter((b) => b.status === 'PENDING');
     const approved = state.bookings
       .filter((b) => b.status === 'APPROVED' && b.endAt > now)
       .sort((a, b) => a.startAt - b.startAt);
-    const openReports = state.reports.filter((r) => (r.status || 'OPEN') !== 'RESOLVED');
-    const closedReports = state.reports
-      .filter((r) => (r.status || 'OPEN') === 'RESOLVED')
-      .slice(0, 5);
 
     if (pending.length === 0) {
       const empty = document.createElement('p');
@@ -1217,65 +1184,6 @@ function initAdminBookingsPage() {
         info.innerHTML = `<strong>${b.roomLabel}</strong><span class="status">${times}</span><span class="status">Approved</span>`;
         row.appendChild(info);
         approvedList.appendChild(row);
-      });
-    }
-
-    if (openReports.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'muted';
-      empty.textContent = 'No open maintenance requests.';
-      maintenanceList.appendChild(empty);
-    } else {
-      openReports.forEach((r) => {
-        const row = document.createElement('div');
-        row.className = 'wash-item';
-        const info = document.createElement('div');
-        info.className = 'info';
-        const machine = state.machines.find((m) => m.id === r.machineId);
-        const machineLabel = machine?.label || r.machineId;
-        info.innerHTML = `<strong>${machineLabel}</strong><span class="status">${r.reason} · ${r.createdAt}</span>`;
-        if (r.notes) {
-          const notes = document.createElement('span');
-          notes.className = 'status';
-          notes.textContent = r.notes;
-          info.appendChild(notes);
-        }
-        if (r.photoDataUrl) {
-          const photo = document.createElement('img');
-          photo.className = 'maintenance-photo';
-          photo.src = r.photoDataUrl;
-          photo.alt = 'Reported issue photo';
-          info.appendChild(photo);
-        }
-        const actions = document.createElement('div');
-        actions.className = 'wash-actions';
-        const resolveBtn = document.createElement('button');
-        resolveBtn.textContent = 'Resolve';
-        resolveBtn.onclick = () => resolveReport(r.id);
-        actions.appendChild(resolveBtn);
-        row.appendChild(info);
-        row.appendChild(actions);
-        maintenanceList.appendChild(row);
-      });
-    }
-
-    if (closedReports.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'muted';
-      empty.textContent = 'No recently resolved requests.';
-      resolvedList.appendChild(empty);
-    } else {
-      closedReports.forEach((r) => {
-        const row = document.createElement('div');
-        row.className = 'wash-item';
-        const info = document.createElement('div');
-        info.className = 'info';
-        const machine = state.machines.find((m) => m.id === r.machineId);
-        const machineLabel = machine?.label || r.machineId;
-        const resolvedAt = r.resolvedAt || 'Resolved';
-        info.innerHTML = `<strong>${machineLabel}</strong><span class="status">${r.reason} · ${resolvedAt}</span>`;
-        row.appendChild(info);
-        resolvedList.appendChild(row);
       });
     }
   };
