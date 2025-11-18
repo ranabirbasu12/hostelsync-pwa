@@ -435,13 +435,6 @@ main {
   cursor: pointer;
 }
 
-.maintenance-photo {
-  margin-top: 0.25rem;
-  max-width: 120px;
-  border-radius: var(--border-radius);
-  box-shadow: var(--card-shadow);
-}
-
 .cta-row {
   display: flex;
   gap: 0.5rem;
