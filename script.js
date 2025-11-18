@@ -329,10 +329,9 @@ function initState() {
       });
     });
   }
-  // Ensure existing reports carry a status for admin workflows
-  if (state && Array.isArray(state.reports)) {
-    state.reports = state.reports.map((r) => (r.status ? r : { ...r, status: 'OPEN' }));
-  }
+  // Ensure reports are always present and carry statuses for admin workflows
+  if (!Array.isArray(state.reports)) state.reports = [];
+  state.reports = state.reports.map((r) => (r.status ? r : { ...r, status: 'OPEN' }));
   initCommonRoomDb(needsReset);
   syncUserFromCookie();
   saveState();
@@ -1155,9 +1154,6 @@ function initAdminBookingsPage() {
   const maintenanceList = document.getElementById('maintenance-reports');
   const resolvedList = document.getElementById('resolved-reports');
   if (!pendingList || !approvedList || !maintenanceList || !resolvedList) return;
-
-  const logoutBtn = document.getElementById('admin-logout');
-  if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
 
   const logoutBtn = document.getElementById('admin-logout');
   if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
