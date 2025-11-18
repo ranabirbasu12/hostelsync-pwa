@@ -3,9 +3,8 @@
 HostelSync is a static progressive web app (PWA) that demonstrates laundry management, common room booking, and notification flows for hostel residents. The app is built with plain HTML, CSS, and vanilla JavaScript and can be served from any static host.
 
 ## Project structure
-- `index.html` – Home landing page linking to laundry, room booking, alerts, leaderboard, and profile flows with a persistent bottom navigation bar.【F:index.html†L1-L64】
+- `index.html` – Home landing page linking to laundry, room booking, alerts, and profile flows with a persistent bottom navigation bar.【F:index.html†L1-L62】
 - `laundry.html`, `rooms.html`, `my-washes.html`, `alerts.html`, `my-bookings.html`, `admin-bookings.html`, `profile.html` – Feature pages that share the global stylesheet and script.
-- `leaderboard.html` – Sustainability leaderboard highlighting residents with efficient laundry habits, sorted by a savings score that rewards full cycles and lower resource use.【F:leaderboard.html†L1-L131】
 - `styles.css` – Global design system (palette, cards, navigation) used across all pages.【F:styles.css†L1-L120】
 - `script.js` – Application logic: state persistence, pseudo-authentication, timers, per-page initialisers, and modal interactions.【F:script.js†L1-L136】
 - `service-worker.js` and `manifest.json` – PWA plumbing for caching and install metadata.【F:service-worker.js†L1-L49】【F:manifest.json†L1-L18】
