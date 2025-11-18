@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Leaderboard · HostelSync</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="script.js"></script>
+  </head>
+  <body class="leaderboard-page">
+    <header>
+      <h1>Leaderboard</h1>
+      <!-- Mode indicator for students -->
+      <p class="sub-text">Student Mode</p>
+    </header>
+    <main>
+      <section class="leaderboard-hero">
+        <h2>Celebrate sustainable laundry habits</h2>
+        <p class="muted">
+          Track how your hostel community is saving energy and water by running full,
+          efficient washing cycles.
+        </p>
+      </section>
+      <section class="leaderboard-card">
+        <div class="leaderboard-top-row">
+          <div>
+            <h3>Resource Savings Leaderboard</h3>
+            <p class="muted">
+              Ranked by a savings score that rewards full cycles and penalises extra
+              electricity and water use per load.
+            </p>
+          </div>
+          <div class="score-legend">
+            <span class="score-pill">
+              Savings score = (cycles × 10) − (kWh × 2) − (water ÷ 20)
+            </span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Cycles booked</th>
+                <th>Units consumed (kWh)</th>
+                <th>Water consumed (litres)</th>
+                <th>Savings score</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboard-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <nav class="bottom-nav">
+      <a href="index.html">
+        <span class="icon">🏠</span>
+        Home
+      </a>
+      <a href="laundry.html">
+        <span class="icon">🧺</span>
+        Laundry
+      </a>
+      <a href="rooms.html">
+        <span class="icon">🚪</span>
+        Rooms
+      </a>
+      <a href="alerts.html">
+        <span class="icon">🔔</span>
+        Alerts
+      </a>
+      <a href="leaderboard.html" class="active">
+        <span class="icon">🏆</span>
+        Leaderboard
+      </a>
+      <a href="profile.html">
+        <span class="icon">👤</span>
+        Profile
+      </a>
+    </nav>
+    <script>
+      const leaderboardEntries = [
+        { user: 'Madhav C309', cycles: 9, energy: 13.5, water: 450 },
+        { user: 'Abhiram C308', cycles: 7, energy: 10.5, water: 350 },
+        { user: 'Rishab C307', cycles: 5, energy: 7.5, water: 250 },
+        { user: 'Akash C305', cycles: 6, energy: 9, water: 300 },
+        { user: 'Sujith C304', cycles: 4, energy: 6, water: 200 },
+        { user: 'Swaran C303', cycles: 8, energy: 12, water: 400 },
+        { user: 'Ishan C302', cycles: 3, energy: 4.5, water: 150 },
+        { user: 'Prahlad C301', cycles: 3, energy: 4.5, water: 150 },
+        { user: 'Shubham Naskar C307', cycles: 7, energy: 10.5, water: 350 },
+        { user: 'Harsh Gawde C336', cycles: 6, energy: 9, water: 300 },
+        { user: 'Sayondeep Choudhary C339', cycles: 5, energy: 7.5, water: 250 },
+        { user: 'Ashanta Roy C338', cycles: 4, energy: 6, water: 200 },
+        { user: 'Ankush Hait C341', cycles: 7, energy: 10.5, water: 350 },
+        { user: 'Gaurav Rajput C340', cycles: 6, energy: 9, water: 300 }
+      ];
+
+      function computeSavingsScore(entry) {
+        const rawScore = entry.cycles * 10 - (entry.energy * 2 + entry.water / 20);
+        return Math.max(0, Math.round(rawScore));
+      }
+
+      function renderLeaderboard() {
+        const tbody = document.getElementById('leaderboard-body');
+        tbody.innerHTML = '';
+
+        const sortedEntries = leaderboardEntries
+          .map((entry) => ({ ...entry, score: computeSavingsScore(entry) }))
+          .sort((a, b) =>
+            b.score - a.score ||
+            a.energy / a.cycles - b.energy / b.cycles ||
+            a.water / a.cycles - b.water / b.cycles ||
+            a.user.localeCompare(b.user)
+          );
+
+        sortedEntries.forEach((entry, index) => {
+          const efficiencyKwh = (entry.energy / entry.cycles).toFixed(2);
+          const efficiencyWater = Math.round(entry.water / entry.cycles);
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td class="rank-cell">
+              <span class="rank-badge">#${index + 1}</span>
+              <div class="participant">
+                <strong>${entry.user}</strong>
+                <span class="muted">${efficiencyKwh} kWh · ${efficiencyWater} L per cycle</span>
+              </div>
+            </td>
+            <td>${entry.cycles}</td>
+            <td>${entry.energy}</td>
+            <td>${entry.water}</td>
+            <td><span class="score-chip">${entry.score}</span></td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      document.addEventListener('DOMContentLoaded', renderLeaderboard);
+    </script>
+  </body>
+</html>

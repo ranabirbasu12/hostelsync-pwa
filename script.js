@@ -12,6 +12,21 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// Demo authentication constants
+const AUTH_COOKIE_KEY = 'hostelsync_auth';
+const DEMO_STUDENT = {
+  email: 'student@hostel.edu',
+  password: 'student123',
+  name: 'Student Resident',
+  hostel: 'OH',
+  room: '201',
+};
+const DEMO_ADMIN = {
+  email: 'admin@hostel.edu',
+  password: 'admin123',
+  name: 'Admin Approver',
+};
+
 // Global error handler disabled.  Enable manually for debugging if needed.
 // window.onerror = function(message, source, lineno, colno, error) {
 //   if (!window.__errorShown) {
@@ -32,7 +47,7 @@ if ('serviceWorker' in navigator) {
 
 // Bump this number whenever the state schema or default machine setup changes.
 // Incrementing the version forces a reset of the persisted state in localStorage.
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 let state = null;
 const COMMON_ROOM_DB_KEY = 'hostelsync_common_room_db';
 let commonRoomDB = null;
@@ -135,38 +150,37 @@ function syncUserFromCookie() {
   saveState();
 }
 
-// Create an array of machine objects with random starting statuses.  This
-// function assumes a single hostel (LVH) with 4 floors and 5 machines per
-// floor.  Machines are labelled like M-1A, M-1B, etc.
+// Create an array of machine objects for the single supported hostel/floor.
+// The current deployment focuses solely on Hostel OH, second floor, with
+// three fully functional machines.  Machines are labelled M-2A, M-2B, M-2C
+// to match the second-floor context.
 function makeMachines() {
-  // Generate machines for all four hostels (LVH, OH, WH, NH).  Each hostel
-  // contains 4 floors with 5 machines per floor.  Statuses are
-  // randomised for demonstration and align with the original React mock.
-  const hostels = ['LVH', 'OH', 'WH', 'NH'];
-  const machines = [];
-  hostels.forEach((hostel) => {
-    const floors = 4;
-    for (let floor = 1; floor <= floors; floor++) {
-      for (let i = 1; i <= 5; i++) {
-        const id = `${hostel}-${floor}-${i}`;
-        const label = `M-${floor}${String.fromCharCode(64 + i)}`;
-        const running = Math.random() < 0.45;
-        const awaiting = !running && Math.random() < 0.25;
-        machines.push({
-          id,
-          label,
-          hostel,
-          floor,
-          status: running ? 'RUNNING' : awaiting ? 'AWAITING' : 'FREE',
-          eta: running ? Math.floor(8 + Math.random() * 28) : undefined,
-          lastCompletedAt: awaiting
-            ? Date.now() - Math.floor(Math.random() * 1000 * 60 * 30)
-            : undefined,
-        });
-      }
-    }
-  });
-  return machines;
+  return [
+    {
+      id: 'OH-2-1',
+      label: 'M-2A',
+      hostel: 'OH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+    {
+      id: 'OH-2-2',
+      label: 'M-2B',
+      hostel: 'OH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+    {
+      id: 'OH-2-3',
+      label: 'M-2C',
+      hostel: 'OH',
+      floor: 2,
+      status: 'FREE',
+      eta: undefined,
+    },
+  ];
 }
 
 // Create a list of common rooms for booking.  Each room has an id, a
@@ -258,7 +272,6 @@ function ensureCommonRoomDb() {
 // structure tracks which floors the user wants to be alerted about when a
 // machine becomes free.
 function initState() {
-  ensureAccountDb();
   state = loadState();
   // If there is no saved state OR the saved state appears invalid
   // (e.g. no machines, or machine statuses are not one of the four
@@ -302,6 +315,7 @@ function initState() {
     });
   }
   initCommonRoomDb(needsReset);
+  syncUserFromCookie();
   saveState();
 }
 
@@ -1048,6 +1062,9 @@ function initAdminBookingsPage() {
   const approvedList = document.getElementById('approved-bookings');
   if (!pendingList || !approvedList) return;
 
+  const logoutBtn = document.getElementById('admin-logout');
+  if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
+
   window.renderAdminBookings = function renderAdminBookings() {
     ensureCommonRoomDb();
     pendingList.innerHTML = '';
@@ -1178,7 +1195,8 @@ function initLaundryPage() {
     floors.forEach((floor) => {
       const opt = document.createElement('option');
       opt.value = String(floor);
-      opt.textContent = `Floor ${floor}`;
+      const isSecondFloor = Number(floor) === 2;
+      opt.textContent = isSecondFloor ? 'Second Floor' : `Floor ${floor}`;
       floorSelect.appendChild(opt);
     });
     if (!floorSelect.value) floorSelect.value = String(floors[0]);
@@ -2020,20 +2038,21 @@ function initProfilePage() {
 // Login a user and persist to state.  Generates a simple id and records
 // email and phone number.  The role controls whether the user sees the
 // student experience or the admin approvals view.
-function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
-  const cleanedEmail = email.trim();
-  state.user = {
-    id: `${role}-${Date.now()}`,
-    role,
-    email: cleanedEmail,
-    phone: (phone || '').trim() || null,
-    hostel: role === 'student' ? DEMO_STUDENT.hostel : '',
-    room: role === 'student' ? DEMO_STUDENT.room : '',
-    name: nameOverride || cleanedEmail.split('@')[0],
-  };
-  saveState();
-  const overlay = document.getElementById('auth-overlay');
-  if (overlay) overlay.remove();
+  function loginUser(email, phone, role = 'student', nameOverride, options = {}) {
+    const cleanedEmail = email.trim();
+    state.user = {
+      id: `${role}-${Date.now()}`,
+      role,
+      email: cleanedEmail,
+      phone: (phone || '').trim() || null,
+      hostel: role === 'student' ? DEMO_STUDENT.hostel : '',
+      room: role === 'student' ? DEMO_STUDENT.room : '',
+      name: nameOverride || cleanedEmail.split('@')[0],
+    };
+    setAuthCookie(state.user);
+    saveState();
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.remove();
   document.body.classList.remove('auth-locked');
   document.body.classList.toggle('admin-mode', role === 'admin');
   pushNotice('Logged in as ' + state.user.email, 'info');
