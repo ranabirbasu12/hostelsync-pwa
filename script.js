@@ -1154,6 +1154,9 @@ function initAdminBookingsPage() {
   const logoutBtn = document.getElementById('admin-logout');
   if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
 
+  const logoutBtn = document.getElementById('admin-logout');
+  if (logoutBtn) logoutBtn.addEventListener('click', logoutUser);
+
   window.renderAdminBookings = function renderAdminBookings() {
     ensureCommonRoomDb();
     pendingList.innerHTML = '';
