@@ -512,6 +512,121 @@ main {
   cursor: pointer;
 }
 
+/* Leaderboard page */
+.leaderboard-hero {
+  background: linear-gradient(135deg, #e0f2fe, #f5f3ff);
+  border: 1px solid #e2e8f0;
+  border-radius: var(--border-radius);
+  padding: 1rem;
+  box-shadow: var(--card-shadow);
+}
+
+.leaderboard-card {
+  margin-top: 1rem;
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--card-shadow);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.leaderboard-top-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.score-legend {
+  display: flex;
+  align-items: center;
+}
+
+.score-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  background-color: #e0f2fe;
+  border-radius: 999px;
+  color: var(--primary-color);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+  padding: 0.75rem 0.5rem;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.leaderboard-table thead th {
+  color: var(--text-muted);
+  border-bottom: 1px solid #e5e7eb;
+  font-weight: 600;
+}
+
+.leaderboard-table tbody tr {
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.leaderboard-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.leaderboard-table tbody tr:nth-child(even) {
+  background-color: #f8fafc;
+}
+
+.rank-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: var(--primary-color);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.participant {
+  display: flex;
+  flex-direction: column;
+}
+
+.participant strong {
+  font-size: 1rem;
+}
+
+.score-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  padding: 0.35rem 0.65rem;
+  background-color: #dcfce7;
+  color: #15803d;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
 /* Profile page styling */
 .profile-info {
   background-color: var(--surface-color);
